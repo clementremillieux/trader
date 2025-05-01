@@ -1,2 +1,5 @@
 launchctl unload ~/Library/LaunchAgents/com.remillieux.traderauto.plist
 launchctl load   ~/Library/LaunchAgents/com.remillieux.traderauto.plist
+
+clement@20.49.34.38
+cubhox-5coSno-gazpyj
