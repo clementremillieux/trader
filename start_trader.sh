@@ -7,5 +7,5 @@ fi
 cd /home/clement/trader
 
 exec poetry run python3 -m app.trader.trader \
-     >> /Users/remillieux/Documents/trader_auto/trader.out.log \
-     2>> /Users/remillieux/Documents/trader_auto/trader.err.log
+     >> /home/clement/trader/trader.out.log \
+     2>> /home/clement/trader/trader.err.log
