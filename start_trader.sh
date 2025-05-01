@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 
-if [ -f "$HOME/.zprofile" ]; then
-  source "$HOME/.zprofile"
-fi
+# 1. Assurez‐vous que ~/.local/bin (et pyenv si vous l’utilisez) est bien dans le PATH
+export PATH="$HOME/.local/bin:$HOME/.pyenv/shims:$PATH"
 
-cd /home/clement/trader
+# 2. Allez dans le dossier du projet
+cd /home/clement/trader || exit 1
 
-exec poetry env use 3.10.1
+# 3. Récupérez le chemin du venv Poetry
+VENV_PATH=$(/home/clement/.local/bin/poetry env info -p)
 
-exec /home/clement/.local/bin/poetry run python3 -m app.trader.trader \
+# 4. Lancez le module sur le Python du venv
+exec "$VENV_PATH/bin/python" -m app.trader.trader \
      >> /home/clement/trader/trader.out.log \
      2>> /home/clement/trader/trader.err.log
