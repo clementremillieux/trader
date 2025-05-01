@@ -1,0 +1,18 @@
+[Unit]
+Description=Trader bot service
+After=network.target
+
+[Service]
+Type=simple
+User=clement
+WorkingDirectory=/home/clement/trader
+ExecStart=/home/clement/trader/start_trader.sh
+Restart=always
+RestartSec=5
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=trader-bot
+
+[Install]
+WantedBy=multi-user.target
