@@ -10,6 +10,6 @@ cd /home/clement/trader || exit 1
 VENV_PATH=$(/home/clement/.local/bin/poetry env info -p)
 
 # 4. Lancez le module sur le Python du venv
-exec "$VENV_PATH/bin/python" -m app.trader.trader \
+exec "$VENV_PATH/bin/python3.10" -m app.trader.trader \
      >> /home/clement/trader/trader.out.log \
      2>> /home/clement/trader/trader.err.log
