@@ -1,0 +1,2 @@
+launchctl unload ~/Library/LaunchAgents/com.remillieux.traderauto.plist
+launchctl load   ~/Library/LaunchAgents/com.remillieux.traderauto.plist

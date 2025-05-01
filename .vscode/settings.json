@@ -1,0 +1,13 @@
+{
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "basic",
+    "python.linting.enabled": true,
+    "python.linting.pylintPath": "pylint",
+    "editor.formatOnSave": true,
+    "python.formatting.provider": "yapf",
+    "python.linting.pylintEnabled": true,
+    "flake8.args": [
+        "--max-line-length=92"
+    ],
+
+}
