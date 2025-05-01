@@ -4,7 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=clement
+User=root
+Group=root
 WorkingDirectory=/home/clement/trader
 ExecStart=/home/clement/trader/start_trader.sh
 Restart=always
