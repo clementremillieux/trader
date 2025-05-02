@@ -252,13 +252,13 @@ class AlpacaAccountClient:
         res: List[Position] | RawData = self.client.get_all_positions()
 
         if isinstance(res, List):
-            for position in res:
-                logger.info(
-                    "ALPACA => Position: %s",
-                    position.model_dump_json(indent=2),
-                )
+            # for position in res:
+            #     logger.info(
+            #         "ALPACA => Position: %s",
+            #         position.model_dump_json(indent=2),
+            #     )
 
-            logger.info("ALPACA => All positions retrieved successfully.")
+            # logger.info("ALPACA => All positions retrieved successfully.")
 
             return res
 
