@@ -201,6 +201,8 @@ class Trader:
 
                 continue
 
+        await asyncio.sleep(60)
+
     async def scan_and_trade(self) -> None:
         """
         Scan tickers, run analysis, and place new buy orders.
