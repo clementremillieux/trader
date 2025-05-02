@@ -12,7 +12,7 @@ client = StockHistoricalDataClient(
 )
 
 request_params = StockBarsRequest(
-    symbol_or_symbols=["WDC"],
+    symbol_or_symbols=["KGEI"],
     timeframe=TimeFrame.Hour,
     start=datetime(2024, 1, 1),
 )
@@ -20,7 +20,7 @@ request_params = StockBarsRequest(
 bars = client.get_stock_bars(request_params)
 
 # convert to dataframe
-df_wdc = bars.df.loc["WDC"]
+df_wdc = bars.df.loc["KGEI"]
 
 df_wdc.index = pandas.to_datetime(df_wdc.index).tz_convert("UTC")
 

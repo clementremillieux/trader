@@ -8,7 +8,7 @@ from app.tickers.schemas import DatasetSignal
 async def test_analysis():
     """Test the analysis module."""
 
-    ticker = "WDC"
+    ticker = "KGEI"
 
     signals = [
         DatasetSignal(

@@ -66,16 +66,12 @@ class AlpacaAccountClient:
             base_url (Optional[str], optional): Custom Alpaca API URL. Defaults to None.
         """
 
-        logger.info("ALPACA => Initializing TradingClient (paper=%s)", paper)
-
         self.client = TradingClient(api_key=api_key, paper=paper, secret_key=secret_key)
 
         self.client_data = StockHistoricalDataClient(
             api_key=api_key,
             secret_key=secret_key,
         )
-
-        # logger.info("AlpacaAccountClient initialized successfully.")
 
     def get_account(self) -> Optional[TradeAccount]:
         """
@@ -350,7 +346,7 @@ class AlpacaAccountClient:
 
             return None
 
-        df_wdc = bars.df.loc["WDC"]
+        df_wdc = bars.df.loc[ticker]
 
         df_wdc.index = pandas.to_datetime(df_wdc.index).tz_convert("UTC")
 
