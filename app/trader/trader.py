@@ -3,12 +3,16 @@
 import asyncio
 
 import json
+
 from pathlib import Path
+
+import random
 import threading
 
 from typing import List
 
 from alpaca.trading.enums import OrderSide
+from torch import rand
 
 from app.trader.tickers import TICKERS
 
@@ -208,6 +212,8 @@ class Trader:
         Scan tickers, run analysis, and place new buy orders.
         """
         tickers = self.tickers
+
+        random.shuffle(tickers)
 
         tranche = self.tranche_pct
 
