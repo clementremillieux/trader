@@ -7,8 +7,8 @@ import pandas
 
 # no keys required for crypto data
 client = StockHistoricalDataClient(
-    api_key="PKPAPAB1JWAA5PLJSFZ4",
-    secret_key="HTMo7Lj68OpsXsiTkKIn6JV4FYlWtNtqEbd22vlv",
+    api_key="PK88IZ4CR3GJ7KBQ1INL",
+    secret_key="XhpKvWsXeF1ki5m58dcXH6rsNv3Gwoqsuac4rMAd",
 )
 
 request_params = StockBarsRequest(

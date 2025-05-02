@@ -53,7 +53,7 @@ class TickerHandler:
 
         diff = now - last_ts
 
-        threshold = timedelta(hours=1, minutes=1)
+        threshold = timedelta(hours=1, minutes=10)
 
         if diff > threshold:
             logger.warning("TICKER HANDLER Data is older than threshold: %s", diff)
