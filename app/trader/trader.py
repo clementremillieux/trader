@@ -212,7 +212,7 @@ class Trader:
         Scan tickers, run analysis, and place new buy orders.
         """
 
-        logger.info("TRADER => Scanning tickers...")
+        logger.info("TRADER => Scanning %d tickers...", len(self.tickers))
 
         tickers = self.tickers
 
