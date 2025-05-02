@@ -211,11 +211,11 @@ class Trader:
         Scan tickers, run analysis, and place new buy orders.
         """
 
-        logger.info("TRADER => Scanning %d tickers...", len(self.tickers))
-
         tickers = self.tickers
 
         random.shuffle(tickers)
+
+        logger.info("TRADER => Scanning %d tickers...", len(tickers))
 
         tranche = self.tranche_pct
 
