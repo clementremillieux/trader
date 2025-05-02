@@ -12,7 +12,6 @@ import threading
 from typing import List
 
 from alpaca.trading.enums import OrderSide
-from torch import rand
 
 from app.trader.tickers import TICKERS
 
@@ -53,7 +52,7 @@ class Trader:
             analysis (Any): Module with `run(ticker: str) -> bool`.
         """
 
-        self.tickers: List[str] = TICKERS
+        self.tickers: List[str] = list(set(TICKERS))
 
         self.stop_loss_pct: float = 0.04
 
