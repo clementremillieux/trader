@@ -384,4 +384,6 @@ class Runner:
         Run the model on the data.
         """
 
+        print(f"data.shape: {data.shape}")
+
         return self.model(data)

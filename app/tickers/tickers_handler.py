@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas
 
+from app.alpaca.alpaca_handler import AlpacaAccountClient
 from app.yahoo.yahoo_handler import YahooHandler
 
 from app.tickers.schemas import Stock, TickerData
@@ -23,10 +24,22 @@ class TickerHandler:
 
         self.yahoo_handler = YahooHandler(ticker=self.name)
 
+        self.alpaca_client = AlpacaAccountClient(
+            api_key="PKPAPAB1JWAA5PLJSFZ4",
+            secret_key="HTMo7Lj68OpsXsiTkKIn6JV4FYlWtNtqEbd22vlv",
+            paper=True,
+        )
+
     async def download_data(self, interval: str, days: str) -> None:
         """_summary_"""
 
-        stock = self.yahoo_handler.get_stock_data(interval=interval, days=days)
+        # stock = self.yahoo_handler.get_stock_data(interval=interval, days=days)
+
+        stock = self.alpaca_client.get_ticker_data(
+            ticker=self.name,
+            interval=interval,
+            days=days,
+        )
 
         last_ts: pandas.Timestamp = stock.index[-1]
 

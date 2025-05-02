@@ -1,10 +1,20 @@
 """Alpaca handler module."""
 
+from datetime import datetime, timedelta
+
 from typing import List, Optional
+
+from pandas import DataFrame
 
 from alpaca.common import RawData
 
+from alpaca.data.timeframe import TimeFrame
+
 from alpaca.trading.client import TradingClient
+
+from alpaca.data.requests import StockBarsRequest
+
+from alpaca.data.historical import StockHistoricalDataClient
 
 from alpaca.trading.models import TradeAccount, ClosePositionResponse, Position
 
@@ -25,6 +35,8 @@ from alpaca.trading.enums import (
     QueryOrderStatus,
     AssetClass,
 )
+import pandas
+
 
 from config.logger_config import logger
 
@@ -57,6 +69,11 @@ class AlpacaAccountClient:
         logger.info("ALPACA => Initializing TradingClient (paper=%s)", paper)
 
         self.client = TradingClient(api_key=api_key, paper=paper, secret_key=secret_key)
+
+        self.client_data = StockHistoricalDataClient(
+            api_key=api_key,
+            secret_key=secret_key,
+        )
 
         logger.info("AlpacaAccountClient initialized successfully.")
 
@@ -297,3 +314,46 @@ class AlpacaAccountClient:
             logger.error("ALPACA => Failed to close all positions.")
 
             return None
+
+    def get_ticker_data(
+        self,
+        ticker: str,
+        interval: str,
+        days: str,
+    ) -> Optional[DataFrame]:
+        """
+        Get historical data for a specific ticker.
+        Args:
+            ticker (str): Ticker symbol (e.g., 'AAPL').
+            interval (str): Timeframe for the data (e.g., '1h', '1d').
+            days (str): Number of days of historical data to retrieve.
+        """
+
+        if interval == "1h":
+            timeframe = TimeFrame.Hour
+
+        else:
+            logger.error("ALPACA => Unsupported interval: %s", interval)
+
+            return None
+
+        request_params = StockBarsRequest(
+            symbol_or_symbols=[ticker],
+            timeframe=timeframe,
+            start=datetime.now() - timedelta(days=int(days) + 1),
+        )
+
+        bars = self.client_data.get_stock_bars(request_params)
+
+        if bars is None:
+            logger.error("ALPACA => Failed to retrieve data for %s", ticker)
+
+            return None
+
+        df_wdc = bars.df.loc["WDC"]
+
+        df_wdc.index = pandas.to_datetime(df_wdc.index).tz_convert("UTC")
+
+        df_wdc = df_wdc.rename(columns=str.capitalize)
+
+        return df_wdc
