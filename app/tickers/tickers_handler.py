@@ -1,8 +1,14 @@
 """API a v handler module."""
 
+from datetime import datetime, timedelta, timezone
+
+import pandas
+
 from app.yahoo.yahoo_handler import YahooHandler
 
 from app.tickers.schemas import Stock, TickerData
+
+from config.logger_config import logger
 
 
 class TickerHandler:
@@ -21,5 +27,26 @@ class TickerHandler:
         """_summary_"""
 
         stock = self.yahoo_handler.get_stock_data(interval=interval, days=days)
+
+        last_ts: pandas.Timestamp = stock.index[-1]
+
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize(timezone.utc)
+
+        else:
+            last_ts = last_ts.astimezone(timezone.utc)
+
+        now = datetime.now(timezone.utc)
+
+        diff = now - last_ts
+
+        threshold = timedelta(hours=1, minutes=1)
+
+        if diff > threshold:
+            logger.warning("TICKER HANDLER Data is older than threshold: %s", diff)
+
+            self.data.stock = pandas.DataFrame()
+
+            return
 
         self.data.stock = stock
