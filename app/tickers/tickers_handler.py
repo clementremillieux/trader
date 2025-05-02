@@ -25,8 +25,8 @@ class TickerHandler:
         self.yahoo_handler = YahooHandler(ticker=self.name)
 
         self.alpaca_client = AlpacaAccountClient(
-            api_key="PKPAPAB1JWAA5PLJSFZ4",
-            secret_key="HTMo7Lj68OpsXsiTkKIn6JV4FYlWtNtqEbd22vlv",
+            api_key="PK88IZ4CR3GJ7KBQ1INL",
+            secret_key="XhpKvWsXeF1ki5m58dcXH6rsNv3Gwoqsuac4rMAd",
             paper=True,
         )
 
