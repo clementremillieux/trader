@@ -72,8 +72,8 @@ class Trader:
         self.window_size = 1000
 
         self.client = AlpacaAccountClient(
-            api_key="PKPAPAB1JWAA5PLJSFZ4",
-            secret_key="HTMo7Lj68OpsXsiTkKIn6JV4FYlWtNtqEbd22vlv",
+            api_key="PK5JTVZIGFBUJETR6RUR",
+            secret_key="ADYchRb4wILoBruLOVG9X2ZacXQEWNS5TefZmBti",
             paper=True,
         )
 
