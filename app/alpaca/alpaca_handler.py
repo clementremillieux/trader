@@ -75,7 +75,7 @@ class AlpacaAccountClient:
             secret_key=secret_key,
         )
 
-        logger.info("AlpacaAccountClient initialized successfully.")
+        # logger.info("AlpacaAccountClient initialized successfully.")
 
     def get_account(self) -> Optional[TradeAccount]:
         """
