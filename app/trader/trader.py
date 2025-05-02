@@ -211,6 +211,9 @@ class Trader:
         """
         Scan tickers, run analysis, and place new buy orders.
         """
+
+        logger.info("TRADER => Scanning tickers...")
+
         tickers = self.tickers
 
         random.shuffle(tickers)
