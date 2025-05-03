@@ -46,7 +46,7 @@ class BinanceHandler:
         self.client = Spot(
             api_key=API_KEY,
             api_secret=API_SECRET,
-            base_url="https://api.binance.us",
+            base_url="https://api.binance.com",
         )
 
     def get_portfolio(self) -> PortfolioValue:
