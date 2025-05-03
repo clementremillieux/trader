@@ -1,12 +1,14 @@
 """Binance Handler for managing account and market data."""
 
-from datetime import datetime, timedelta, timezone
 import math
+
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from binance.spot import Spot
+from pydantic import BaseModel
 
 from app.trader.schemas import PortfolioValue, Position
 
@@ -15,6 +17,30 @@ from config.logger_config import logger
 API_KEY = "RRx439X2aBvHzrodPRhgNPAw9hyr48lYFqenjNIjWql25a9kuMMcdV7dRnjE9YsU"
 
 API_SECRET = "RKSfisReVgtRa1bMqrzJjAaVhZ6OjAW9ATdLK3XC9gcBkYuCmOvC9ms77od4OoVp"
+
+
+class SymbolInfos(BaseModel):
+    """
+    **Symbol Information**
+    __________
+    **Description:**
+
+    This class represents the information of a symbol in the Binance API.
+
+    __________
+    **Parameters:**
+
+    - **symbol (str)** - The symbol name.
+    - **lot_size (float)** - The lot size for the symbol.
+    """
+
+    symbol: str
+
+    lot_size: float
+
+    min_qty: float
+
+    step_size: float
 
 
 class BinanceHandler:
@@ -178,27 +204,15 @@ class BinanceHandler:
         - **dict** - The response from the Binance API.
         """
 
-        # if side == "SELL":
-        #     info = self.client.g
+        info = self.get_symbol_lot_size(symbol=symbol)
 
-        #     print(info)
-
-        #     lot = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
-
-        #     min_qty = float(lot["minQty"])
-
-        #     step_size = float(lot["stepSize"])
-
-        #     adj_qty = self.adjust_quantity(quantity, min_qty, step_size)
-
-        # else:
-        #     adj_qty = quantity
+        adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)
 
         return self.client.new_order(
             symbol=symbol,
             side=side,
             type=order_type,
-            quantity=quantity,
+            quantity=adj_qty,
             price=price,
             recvWindow=6000,
         )
@@ -274,3 +288,54 @@ class BinanceHandler:
         df = df[["Close", "Volume", "High", "Low"]].astype(float)
 
         return df
+
+    def get_symbol_lot_size(self, symbol: str) -> SymbolInfos:
+        """
+        **Get Symbol Lot Size**
+        __________
+        **Description:**
+        Retrieves the lot size for a specific symbol from the Binance API.
+        __________
+        **Parameters:**
+        - **symbol (str)** - The trading pair symbol (e.g., 'BTCUSDT').
+        __________
+        **Returns:**
+        - **SymbolInfos** - An object containing:
+            - **symbol (str)**
+            - **lot_size (float)**
+            - **min_qty (float)**
+            - **step_size (float)**
+        __________
+        **Raises:**
+        - **ValueError** if the symbol isn’t returned by the API or if the LOT_SIZE filter is missing.
+        """
+
+        data = self.client.exchange_info(symbol)
+
+        symbols = data.get("symbols", [])
+
+        if not symbols:
+            raise ValueError(f"No data returned for symbol '{symbol}'")
+
+        symbol_info = symbols[0]
+
+        filters = symbol_info.get("filters", [])
+
+        lot_filter = next(
+            (f for f in filters if f.get("filterType") == "LOT_SIZE"), None
+        )
+
+        if lot_filter is None:
+            raise ValueError(f"LOT_SIZE filter not found for symbol '{symbol}'")
+
+        # 4) Parse out the values
+        min_qty = float(lot_filter["minQty"])
+
+        step_size = float(lot_filter["stepSize"])
+
+        return SymbolInfos(
+            symbol=symbol,
+            lot_size=min_qty,
+            min_qty=min_qty,
+            step_size=step_size,
+        )
