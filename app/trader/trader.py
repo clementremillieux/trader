@@ -156,6 +156,8 @@ class Trader:
                     self.stop_loss_pct * 100,
                 )
 
+                symbol = f"{symbol}EUR"
+
                 self.client.submit_order(
                     symbol=symbol,
                     quantity=float(pos.qty),
@@ -183,6 +185,8 @@ class Trader:
                         "TRADER => Position %s triggered SELL signal. Closing.",
                         symbol,
                     )
+
+                    symbol = f"{symbol}EUR"
 
                     self.client.submit_order(
                         symbol=symbol,
