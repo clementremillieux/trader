@@ -83,7 +83,7 @@ class Trader:
         ]
 
         self.analysis = Analysis(
-            model_path="app/model/model_epoch_crypto_44.pth",
+            model_path="app/model/model_epoch_crypto_176.pth",
             signals=signals,
             num_historical_features=12,
             encoder_length=self.window_size,
@@ -156,12 +156,12 @@ class Trader:
                     self.stop_loss_pct * 100,
                 )
 
-                # self.client.submit_order(
-                #     symbol=symbol,
-                #     quantity=float(pos.qty),
-                #     side="SELL",
-                #     order_type="market",
-                # )
+                self.client.submit_order(
+                    symbol=symbol,
+                    quantity=float(pos.qty),
+                    side="SELL",
+                    order_type="market",
+                )
 
             try:
                 signal: AnalysisOutput = await self.analysis.analyze(
@@ -184,12 +184,12 @@ class Trader:
                         symbol,
                     )
 
-                    # self.client.submit_order(
-                    #     symbol=symbol,
-                    #     quantity=float(pos.qty),
-                    #     side="SELL",
-                    #     order_type="market",
-                    # )
+                    self.client.submit_order(
+                        symbol=symbol,
+                        quantity=float(pos.qty),
+                        side="SELL",
+                        order_type="market",
+                    )
 
             except Exception as e:
                 logger.error("TRADER => Analysis error for %s: %s", symbol, e)
@@ -274,12 +274,12 @@ class Trader:
                     qty,
                 )
 
-                # self.client.submit_order(
-                #     symbol=sym,
-                #     quantity=qty,
-                #     side="BUY",
-                #     order_type="MARKET",
-                # )
+                self.client.submit_order(
+                    symbol=sym,
+                    quantity=qty,
+                    side="BUY",
+                    order_type="MARKET",
+                )
 
                 buying_power -= invest_amt
 
