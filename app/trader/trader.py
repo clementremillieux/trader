@@ -182,7 +182,7 @@ class Trader:
 
                 if signal.state == AnalysisState.SELL:
                     logger.info(
-                        "TRADER => Position %s triggered SELL signal. Closing for %.2f%%",
+                        "TRADER => Position %s triggered SELL signal. Closing for %.10f%%",
                         symbol,
                         pos.qty,
                     )
