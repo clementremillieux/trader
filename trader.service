@@ -5,13 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=clement
-WorkingDirectory=/home/clement/trader_cryto
+WorkingDirectory=/home/clement/trader_crypto
 
 # On s'assure que poetry est trouvé
 Environment="PATH=/home/clement/.local/bin:/home/clement/.pyenv/shims:/usr/bin:/bin"
 
 # On lance votre script (qui gère tout)
-ExecStart=/bin/bash -lc '/home/clement/trader_cryto/start_trader.sh'
+ExecStart=/bin/bash -lc '/home/clement/trader_crypto/start_trader.sh'
 
 Restart=always
 RestartSec=5
