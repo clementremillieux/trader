@@ -21,17 +21,17 @@ for position in positions:
 tickers: List[str] = binance_handler.get_all_tickers()
 
 
-stock = binance_handler.get_historical_data(symbol="BTCUSDT", interval="1h", days=150)
+# stock = binance_handler.get_historical_data(symbol="BTCUSDT", interval="1h", days=150)
 
-print(stock.head())
+# print(stock.head())
 
-print(stock.tail())
+# print(stock.tail())
 
-print("Found %s rows" % len(stock))
+# print("Found %s rows" % len(stock))
 
-# binance_handler.submit_order(
-#     symbol="BTCEUR",
-#     side="BUY",
-#     order_type="MARKET",
-#     quantity=0.00012,
-# )
+binance_handler.submit_order(
+    symbol="BTCEUR",
+    side="SELL",
+    order_type="MARKET",
+    quantity=0.00012,
+)

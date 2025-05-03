@@ -160,9 +160,9 @@ class Trader:
 
                 self.client.submit_order(
                     symbol=symbol,
-                    quantity=float(pos.qty),
+                    quantity=round(pos.qty, 6),
                     side="SELL",
-                    order_type="market",
+                    order_type="MARKET",
                 )
 
             try:
@@ -191,9 +191,9 @@ class Trader:
 
                     self.client.submit_order(
                         symbol=symbol,
-                        quantity=float(pos.qty),
+                        quantity=round(pos.qty, 6),
                         side="SELL",
-                        order_type="market",
+                        order_type="MARKET",
                     )
 
             except Exception as e:
