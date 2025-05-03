@@ -83,7 +83,7 @@ class Trader:
         ]
 
         self.analysis = Analysis(
-            model_path="app/model/model_epoch_4_96.pth",
+            model_path="app/model/model_epoch_crypto_44.pth",
             signals=signals,
             num_historical_features=12,
             encoder_length=self.window_size,

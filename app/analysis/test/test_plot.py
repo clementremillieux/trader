@@ -36,7 +36,7 @@ async def test_analysis():
     rsi_period = 5
 
     analysis = Analysis(
-        model_path="app/model/model_epoch_4_96.pth",
+        model_path="app/model/model_epoch_crypto_44.pth",
         signals=signals,
         num_historical_features=12,
         encoder_length=window_size,
