@@ -1,6 +1,7 @@
 """Binance Handler for managing account and market data."""
 
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -130,6 +131,30 @@ class BinanceHandler:
             if float(position.get("free", 0.0)) > 0.0 and position.get("asset") != "EUR"
         ]
 
+    def adjust_quantity(self, qty, min_qty, step_size):
+        """
+        **Adjust Quantity**
+        __________
+        **Description:**
+        Adjusts the quantity of an asset to be compliant with the exchange's minimum quantity and step size.
+        __________
+        **Parameters:**
+        - **qty (float)** - The quantity to adjust.
+        - **min_qty (float)** - The minimum quantity allowed by the exchange.
+        - **step_size (float)** - The step size for the asset.
+        __________
+        **Returns:**
+        - **float** - The adjusted quantity.
+        """
+
+        precision = str(step_size)[::-1].find(".")
+
+        allowed_qty = math.floor(qty / step_size) * step_size
+
+        adjusted = max(allowed_qty, min_qty)
+
+        return round(adjusted, precision)
+
     def submit_order(
         self,
         symbol: str,
@@ -154,12 +179,21 @@ class BinanceHandler:
         **Returns:**
         - **dict** - The response from the Binance API.
         """
+        info = self.client.ticker_price(symbol)
+
+        lot = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+
+        min_qty = float(lot["minQty"])
+
+        step_size = float(lot["stepSize"])
+
+        adj_qty = self.adjust_quantity(quantity, min_qty, step_size)
 
         return self.client.new_order(
             symbol=symbol,
             side=side,
             type=order_type,
-            quantity=quantity,
+            quantity=adj_qty,
             price=price,
             recvWindow=6000,
         )

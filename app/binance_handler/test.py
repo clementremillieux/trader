@@ -33,5 +33,5 @@ binance_handler.submit_order(
     symbol="BTCEUR",
     side="SELL",
     order_type="MARKET",
-    quantity=0.00012,
+    quantity=0.000120,
 )
