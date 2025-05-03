@@ -200,7 +200,7 @@ class BinanceHandler:
             symbol=symbol,
             side=side,
             type=order_type,
-            quantity=adj_qty,
+            quantity=quantity,
             price=price,
             recvWindow=6000,
         )
