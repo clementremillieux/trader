@@ -10,19 +10,17 @@ import random
 
 import threading
 
-from typing import List
-
-from alpaca.trading.enums import OrderSide
-
-from app.trader.tickers import TICKERS
+from typing import Dict, List, Optional
 
 from app.analysis.analysis import Analysis
 
 from app.tickers.schemas import DatasetSignal
 
-from app.alpaca.alpaca_handler import AlpacaAccountClient
+from app.trader.schemas import PortfolioValue
 
 from app.analysis.schemas import AnalysisOutput, AnalysisState
+
+from app.binance_handler.binance_handler import BinanceHandler
 
 from config.logger_config import logger
 
@@ -53,17 +51,13 @@ class Trader:
             analysis (Any): Module with `run(ticker: str) -> bool`.
         """
 
-        self.tickers: List[str] = list(set(TICKERS))
-
         self.stop_loss_pct: float = 0.04
 
-        self.tranche_pct: float = 0.025
+        self.tranche_pct: float = 0.05
 
         self.window_size = 1000
 
         self.interval = "1h"
-
-        self.days = "500"
 
         self.momentum_period = 5
 
@@ -71,11 +65,7 @@ class Trader:
 
         self.window_size = 1000
 
-        self.client = AlpacaAccountClient(
-            api_key="PK88IZ4CR3GJ7KBQ1INL",
-            secret_key="XhpKvWsXeF1ki5m58dcXH6rsNv3Gwoqsuac4rMAd",
-            paper=True,
-        )
+        self.client = BinanceHandler()
 
         signals = [
             DatasetSignal(
@@ -113,6 +103,8 @@ class Trader:
         else:
             self.highs = {}
 
+        self.tickers: List[str] = self.client.get_all_tickers()
+
     async def _save_highs(self):
         """Save highs to a temporary file and replace the original."""
 
@@ -129,19 +121,19 @@ class Trader:
 
         positions = self.client.get_positions() or []
 
-        self.highs = json.loads(self.persistence_path.read_text())
+        self.highs: Dict[str, float] = json.loads(self.persistence_path.read_text())
 
         for pos in positions:
             symbol = pos.symbol
 
-            curr = float(pos.current_price)
+            curr = float(pos.price)
 
             if symbol not in self.highs:
-                self.highs[symbol] = float(pos.avg_entry_price)
+                self.highs[symbol] = curr
 
                 await self._save_highs()
 
-            high = self.highs.get(symbol, float(pos.avg_entry_price))
+            high = self.highs.get(symbol, pos.price)
 
             if curr > high:
                 self.highs[symbol] = curr
@@ -164,19 +156,18 @@ class Trader:
                     self.stop_loss_pct * 100,
                 )
 
-                self.client.submit_order(
-                    symbol=symbol,
-                    qty=float(pos.qty),
-                    side=OrderSide.SELL,
-                    order_type="market",
-                )
+                # self.client.submit_order(
+                #     symbol=symbol,
+                #     quantity=float(pos.qty),
+                #     side="SELL",
+                #     order_type="market",
+                # )
 
             try:
                 signal: AnalysisOutput = await self.analysis.analyze(
                     ticker=symbol,
                     window_size=self.window_size,
                     interval=self.interval,
-                    days=self.days,
                     momentum_period=self.momentum_period,
                     rsi_period=self.rsi_period,
                     nb_windows=5,
@@ -193,12 +184,12 @@ class Trader:
                         symbol,
                     )
 
-                    self.client.submit_order(
-                        symbol=symbol,
-                        qty=float(pos.qty),
-                        side=OrderSide.SELL,
-                        order_type="market",
-                    )
+                    # self.client.submit_order(
+                    #     symbol=symbol,
+                    #     quantity=float(pos.qty),
+                    #     side="SELL",
+                    #     order_type="market",
+                    # )
 
             except Exception as e:
                 logger.error("TRADER => Analysis error for %s: %s", symbol, e)
@@ -220,15 +211,22 @@ class Trader:
 
         tranche = self.tranche_pct
 
-        account = self.client.get_account()
+        portfolio_value: Optional[PortfolioValue] = self.client.get_portfolio()
 
-        portfolio_value = float(account.portfolio_value)
+        if portfolio_value is None:
+            logger.error("TRADER => Portfolio value is None. Exiting.")
 
-        buying_power = float(account.buying_power)
+            return
+
+        total_value = portfolio_value.total_value
+
+        buying_power = portfolio_value.buying_power
 
         owned = {p.symbol for p in (self.client.get_positions() or [])}
 
-        for sym in tickers:
+        for index, sym in enumerate(tickers):
+            logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
+
             if sym in owned:
                 continue
 
@@ -237,7 +235,6 @@ class Trader:
                     ticker=sym,
                     window_size=self.window_size,
                     interval=self.interval,
-                    days=self.days,
                     momentum_period=self.momentum_period,
                     rsi_period=self.rsi_period,
                     nb_windows=5,
@@ -256,7 +253,7 @@ class Trader:
                 continue
 
             if signal.state == AnalysisState.BUY:
-                invest_amt = portfolio_value * tranche
+                invest_amt = total_value * tranche
 
                 if buying_power < invest_amt:
                     logger.warning(
@@ -265,20 +262,24 @@ class Trader:
                         invest_amt,
                         buying_power,
                     )
+
                     continue
 
-                qty = invest_amt
+                qty = invest_amt / self.client.get_ticker_price(sym)
 
                 logger.info(
-                    "TRADER => Placing buy for %s, amount=%.2f", sym, invest_amt
+                    "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
+                    sym,
+                    invest_amt,
+                    qty,
                 )
 
-                self.client.submit_order(
-                    symbol=sym,
-                    notional=qty,
-                    side=OrderSide.BUY,
-                    order_type="market",
-                )
+                # self.client.submit_order(
+                #     symbol=sym,
+                #     quantity=qty,
+                #     side="BUY",
+                #     order_type="MARKET",
+                # )
 
                 buying_power -= invest_amt
 
@@ -293,8 +294,6 @@ class Trader:
 
             except Exception as e:
                 logger.error("TRADER => Monitor error: %s", e, exc_info=True)
-
-        asyncio.run(self.monitor_positions())
 
     def _run_scan_in_thread(self):
         """

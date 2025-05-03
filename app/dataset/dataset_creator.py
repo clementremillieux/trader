@@ -54,7 +54,6 @@ class DatasetCreator:
         self,
         ticker_name: str,
         interval: str,
-        days: str,
     ) -> Optional[pd.DataFrame]:
         """
         Downloads stock data for the given tickers using the TickerHandler.
@@ -63,12 +62,15 @@ class DatasetCreator:
         try:
             ticker = TickerHandler(name=ticker_name)
 
-            await ticker.download_data(interval=interval, days=days)
+            await ticker.download_data(interval=interval)
 
             return ticker.data.stock
 
-        except Exception as e:
-            print(f"Error processing ticker {ticker_name}: {e}")
+        except Exception as _:
+            logger.warning(
+                "DATASET CREATOR => Error downloading data for %s",
+                ticker_name,
+            )
 
         return None
 
@@ -163,7 +165,6 @@ class DatasetCreator:
         window_size: int,
         ticker_name: str,
         interval: str,
-        days: str,
         signals: List[DatasetSignal],
         momentum_period: int,
         rsi_period: int,
@@ -178,7 +179,6 @@ class DatasetCreator:
             stock: Optional[pd.DataFrame] = await self.get_stock_data(
                 ticker_name=ticker_name,
                 interval=interval,
-                days=days,
             )
 
             if stock is None or stock.shape[0] < window_size:

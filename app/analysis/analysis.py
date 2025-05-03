@@ -1,13 +1,16 @@
 """Analysis class for managing trading operations."""
 
-from os import close
 from typing import List, Optional
 
 import numpy
 
-import matplotlib.pyplot as plt
 import pandas as pd
+
+import torch
+
 from torch import Tensor
+
+import matplotlib.pyplot as plt
 
 from app.model.model import Runner
 
@@ -56,12 +59,56 @@ class Analysis:
             patch_size=patch_size,
         )
 
+    def fill_nan_with_neighbors(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
+        """
+        Fill NaN values in a tensor by forward and backward filling.
+        """
+
+        x_filled = x.clone()
+
+        mask = torch.isnan(x_filled)
+
+        for t in range(1, x_filled.size(dim)):
+            idx_cur = [slice(None)] * x_filled.dim()
+
+            idx_prev = [slice(None)] * x_filled.dim()
+
+            idx_cur[dim] = t
+
+            idx_prev[dim] = t - 1
+
+            cur = x_filled[tuple(idx_cur)]
+
+            prev = x_filled[tuple(idx_prev)]
+
+            m = mask[tuple(idx_cur)]
+
+            x_filled[tuple(idx_cur)][m] = prev[m]
+
+        for t in range(x_filled.size(dim) - 2, -1, -1):
+            idx_cur = [slice(None)] * x_filled.dim()
+
+            idx_next = [slice(None)] * x_filled.dim()
+
+            idx_cur[dim] = t
+
+            idx_next[dim] = t + 1
+
+            cur = x_filled[tuple(idx_cur)]
+
+            nxt = x_filled[tuple(idx_next)]
+
+            m = torch.isnan(cur)
+
+            x_filled[tuple(idx_cur)][m] = nxt[m]
+
+        return x_filled
+
     async def analyze(
         self,
         ticker: str,
         window_size: int,
         interval: str,
-        days: str,
         momentum_period: int,
         rsi_period: int,
         nb_windows: int,
@@ -77,7 +124,6 @@ class Analysis:
             window_size=window_size,
             ticker_name=ticker,
             interval=interval,
-            days=days,
             signals=self.signals,
             momentum_period=momentum_period,
             rsi_period=rsi_period,
@@ -85,7 +131,56 @@ class Analysis:
         )
 
         if dataset is None:
-            logger.error("ANALYZE => (%s) Dataset is None for ticker: %s", name, ticker)
+            logger.warning(
+                "ANALYZE => (%s) Dataset is None for ticker: %s", name, ticker
+            )
+
+            return AnalysisOutput(state=AnalysisState.HOLD)
+
+        nan_mask = torch.isnan(dataset.X)
+
+        num_nans = nan_mask.sum().item()
+
+        logger.info("ANALYZE => There is %d NaNs in the dataset", num_nans)
+
+        if num_nans > 30:
+            logger.warning(
+                "ANALYZE => (%s) Too many NaNs in the dataset for ticker: %s",
+                name,
+                ticker,
+            )
+
+            return AnalysisOutput(state=AnalysisState.HOLD)
+
+        coords = nan_mask.nonzero(as_tuple=True)
+
+        dim1_idx = coords[1]
+
+        if bool((dim1_idx >= 10).any()):
+            logger.warning(
+                "ANALYZE => (%s) NaNs are too far in the dataset for ticker: %s",
+                name,
+                ticker,
+            )
+
+            return AnalysisOutput(state=AnalysisState.HOLD)
+
+        dataset.X = self.fill_nan_with_neighbors(dataset.X)
+
+        nan_mask = torch.isnan(dataset.X)
+
+        num_nans = nan_mask.sum().item()
+
+        logger.info(
+            "ANALYZE => There is %d NaNs in the dataset after filling ", num_nans
+        )
+
+        if num_nans > 0:
+            logger.warning(
+                "ANALYZE => (%s) There are still NaNs in the dataset for ticker: %s",
+                name,
+                ticker,
+            )
 
             return AnalysisOutput(state=AnalysisState.HOLD)
 
@@ -95,32 +190,53 @@ class Analysis:
 
         probs = logits.cpu().detach().numpy()
 
-        preds = numpy.argmax(probs, axis=1)
+        p0 = probs[0]
 
-        diff2_1 = probs[:, 2] - probs[:, 1]
+        diff2_1 = p0[2] - p0[1]
 
-        diff2_0 = probs[:, 2] - probs[:, 0]
+        diff2_0 = p0[2] - p0[0]
 
-        strong2 = (diff2_1 > distance_1) & (diff2_0 > distance_0)
+        arg = p0.argmax()
 
-        count_strong2 = int(numpy.sum(strong2))
+        logger.info("ANALYZE => (%s) [%s] probs = %s", name, ticker, p0)
 
-        last_all_strong2 = (strong2.size >= nb_last_2) and numpy.all(
-            strong2[-nb_last_2:]
+        logger.info(
+            "ANALYZE =>\t- (%s) [%s] diff2_1 = %.4f (threshold=%s)",
+            name,
+            ticker,
+            diff2_1,
+            distance_1,
         )
 
-        if count_strong2 > nb_2 and last_all_strong2:
-            logger.info("ANALYZE => (%s) ANALYZE RESULT [%s]: BUY", name, ticker)
+        logger.info(
+            "ANALYZE =>\t- (%s) [%s] diff2_0  = %.4f (threshold=%s)",
+            name,
+            ticker,
+            diff2_0,
+            distance_0,
+        )
+
+        logger.info(
+            "ANALYZE =>\t- (%s) [%s] Argmax = %d",
+            name,
+            ticker,
+            arg,
+        )
+
+        if arg == 2 and diff2_1 > distance_1 and diff2_0 > distance_0:
+            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
+
             return AnalysisOutput(state=AnalysisState.BUY)
 
-        if preds.size >= 5 and numpy.all(preds[-5:] == 0):
-            logger.info("ANALYZE => (%s) ANALYZE RESULT [%s]: SELL", name, ticker)
+        elif arg == 0:
+            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)
 
-        logger.info("ANALYZE => (%s) ANALYZE RESULT [%s]: HOLD", name, ticker)
+        else:
+            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : HOLD", name, ticker)
 
-        return AnalysisOutput(state=AnalysisState.HOLD)
+            return AnalysisOutput(state=AnalysisState.HOLD)
 
     async def plot_last_windows(
         self,
@@ -147,7 +263,6 @@ class Analysis:
             window_size=window_size,
             ticker_name=ticker,
             interval=interval,
-            days=days,
             signals=self.signals,
             momentum_period=momentum_period,
             rsi_period=rsi_period,
