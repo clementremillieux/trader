@@ -119,8 +119,6 @@ class BinanceHandler:
 
         positions_dict: List[Dict[str, Any]] = self.client.user_asset()
 
-        print(positions_dict)
-
         return [
             Position(
                 symbol=position.get("asset", ""),

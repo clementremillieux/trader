@@ -245,12 +245,6 @@ class Trader:
 
         owned = {p.symbol for p in (self.client.get_positions() or [])}
 
-        print(owned)
-
-        print("----------------")
-
-        print(tickers)
-
         for index, sym in enumerate(tickers):
             logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
 
@@ -300,7 +294,7 @@ class Trader:
 
                     continue
 
-                qty = invest_amt / self.client.get_ticker_price(sym)
+                qty = round(invest_amt / self.client.get_ticker_price(sym), 6)
 
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
