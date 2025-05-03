@@ -4,6 +4,7 @@ import asyncio
 
 import json
 
+import math
 from pathlib import Path
 
 import random
@@ -114,6 +115,21 @@ class Trader:
 
         tmp.replace(self.persistence_path)
 
+    @staticmethod
+    def floor_decimals(x: float, decimals: int) -> float:
+        """
+        Round down a float to a specified number of decimal places.
+        Args:
+            x (float): The number to round down.
+            decimals (int): The number of decimal places to keep.
+        Returns:
+            float: The rounded down number.
+        """
+
+        factor = 10**decimals
+
+        return math.floor(x * factor) / factor
+
     async def monitor_positions(self) -> None:
         """
         Check open positions for drawdown and close if loss exceeds threshold.
@@ -160,7 +176,7 @@ class Trader:
 
                 self.client.submit_order(
                     symbol=symbol,
-                    quantity=round(pos.qty, 5),
+                    quantity=self.floor_decimals(pos.qty, 5),
                     side="SELL",
                     order_type="MARKET",
                 )
@@ -191,7 +207,7 @@ class Trader:
 
                     self.client.submit_order(
                         symbol=symbol,
-                        quantity=round(pos.qty, 5),
+                        quantity=self.floor_decimals(pos.qty, 5),
                         side="SELL",
                         order_type="MARKET",
                     )
