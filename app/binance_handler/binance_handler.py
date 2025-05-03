@@ -179,15 +179,22 @@ class BinanceHandler:
         **Returns:**
         - **dict** - The response from the Binance API.
         """
-        info = self.client.ticker_price(symbol)
 
-        lot = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+        # if side == "SELL":
+        #     info = self.client.g
 
-        min_qty = float(lot["minQty"])
+        #     print(info)
 
-        step_size = float(lot["stepSize"])
+        #     lot = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
 
-        adj_qty = self.adjust_quantity(quantity, min_qty, step_size)
+        #     min_qty = float(lot["minQty"])
+
+        #     step_size = float(lot["stepSize"])
+
+        #     adj_qty = self.adjust_quantity(quantity, min_qty, step_size)
+
+        # else:
+        #     adj_qty = quantity
 
         return self.client.new_order(
             symbol=symbol,

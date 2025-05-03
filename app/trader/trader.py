@@ -160,7 +160,7 @@ class Trader:
 
                 self.client.submit_order(
                     symbol=symbol,
-                    quantity=round(pos.qty, 6),
+                    quantity=round(pos.qty, 5),
                     side="SELL",
                     order_type="MARKET",
                 )
@@ -191,7 +191,7 @@ class Trader:
 
                     self.client.submit_order(
                         symbol=symbol,
-                        quantity=round(pos.qty, 6),
+                        quantity=round(pos.qty, 5),
                         side="SELL",
                         order_type="MARKET",
                     )
