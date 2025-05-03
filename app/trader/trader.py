@@ -294,7 +294,7 @@ class Trader:
 
                     continue
 
-                qty = round(invest_amt / self.client.get_ticker_price(sym), 6)
+                qty = round(invest_amt / self.client.get_ticker_price(sym), 5)
 
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
