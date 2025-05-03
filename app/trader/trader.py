@@ -229,10 +229,24 @@ class Trader:
 
         owned = {p.symbol for p in (self.client.get_positions() or [])}
 
+        print(owned)
+
+        print("----------------")
+
+        print(tickers)
+
         for index, sym in enumerate(tickers):
             logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
 
-            if sym in owned:
+            if (
+                sym in owned
+                or f"{sym}EUR" in owned
+                or f"{sym}USDT" in owned
+                or sym.replace("USDT", "") in owned
+                or sym.replace("EUR", "") in owned
+            ):
+                logger.info("TRADER => Already own %s. Skipping.", sym)
+
                 continue
 
             try:
