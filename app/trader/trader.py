@@ -51,7 +51,7 @@ class Trader:
             analysis (Any): Module with `run(ticker: str) -> bool`.
         """
 
-        self.stop_loss_pct: float = 0.04
+        self.stop_loss_pct: float = 0.065
 
         self.tranche_pct: float = 0.05
 
