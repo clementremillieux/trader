@@ -67,7 +67,7 @@ class Trader:
 
         self.window_size = 1000
 
-        self.client = BinanceHandler()
+        self.client = BinanceHandler(main_currency=main_currency)
 
         signals = [
             DatasetSignal(
