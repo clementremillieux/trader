@@ -105,9 +105,7 @@ class Trader:
         else:
             self.highs = {}
 
-        self.tickers: List[str] = self.client.get_all_tickers(
-            quote_asset=self.main_currency
-        )
+        self.tickers: List[str] = self.client.get_all_tickers()
 
     async def _save_highs(self):
         """Save highs to a temporary file and replace the original."""
