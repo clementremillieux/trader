@@ -248,6 +248,11 @@ class Trader:
         for index, sym in enumerate(tickers):
             logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
 
+            if sym == "EURUSDT":
+                logger.info("TRADER => Skipping EURUSDT.")
+
+                continue
+
             if (
                 sym in owned
                 or f"{sym}EUR" in owned
@@ -294,17 +299,19 @@ class Trader:
 
                     continue
 
-                qty = round(invest_amt / self.client.get_ticker_price(sym), 5)
+                sym_eur = sym.replace("USDT", "EUR")
+
+                qty = round(invest_amt / self.client.get_ticker_price(sym_eur), 5)
 
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
-                    sym,
+                    sym_eur,
                     invest_amt,
                     qty,
                 )
 
                 self.client.submit_order(
-                    symbol=sym,
+                    symbol=sym_eur,
                     quantity=qty,
                     side="BUY",
                     order_type="MARKET",
