@@ -9,7 +9,7 @@ async def test_analysis():
     """Test the analysis module."""
 
     tickers = [
-        "BTCUSDT",
+        "BTC",
     ]
 
     signals = [

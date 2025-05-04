@@ -25,7 +25,7 @@ class TickerHandler:
 
         self.yahoo_handler = YahooHandler(ticker=self.name)
 
-        self.binance_client = BinanceHandler()
+        self.binance_client = BinanceHandler(main_currency="USDC")
 
     async def download_data(self, interval: str) -> None:
         """_summary_"""
