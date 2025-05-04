@@ -245,14 +245,14 @@ class BinanceHandler:
             price,
         )
 
-        # return self.client.new_order(
-        #     symbol=symbol,
-        #     side=side,
-        #     type=order_type,
-        #     quantity=adj_qty,
-        #     price=price,
-        #     recvWindow=6000,
-        # )
+        return self.client.new_order(
+            symbol=symbol,
+            side=side,
+            type=order_type,
+            quantity=adj_qty,
+            price=price,
+            recvWindow=6000,
+        )
 
     def get_all_tickers(self) -> List[str]:
         """
