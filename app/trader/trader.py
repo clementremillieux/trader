@@ -299,9 +299,9 @@ class Trader:
 
                     continue
 
-                sym_eur = sym.replace("USDT", "EUR")
+                qty = round(invest_amt / self.client.get_ticker_price(sym), 5)
 
-                qty = round(invest_amt / self.client.get_ticker_price(sym_eur), 5)
+                sym_eur = sym.replace("USDT", "EUR")
 
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
