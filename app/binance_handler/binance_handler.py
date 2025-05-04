@@ -229,6 +229,9 @@ class BinanceHandler:
         - **dict** - The response from the Binance API.
         """
 
+        if not symbol.endswith(self.main_currency):
+            symbol = symbol + self.main_currency
+
         info = self.get_symbol_lot_size(symbol=symbol)
 
         adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)

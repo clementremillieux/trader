@@ -196,6 +196,10 @@ class Analysis:
 
         diff2_0 = p0[2] - p0[0]
 
+        diff0_1 = p0[0] - p0[1]
+
+        diff0_2 = p0[1] - p0[2]
+
         arg = p0.argmax()
 
         logger.info("ANALYZE => (%s) [%s] probs = %s", name, ticker, p0)
@@ -228,7 +232,7 @@ class Analysis:
 
             return AnalysisOutput(state=AnalysisState.BUY)
 
-        elif arg == 0:
+        elif arg == 0 and diff0_1 > 2 and diff0_2 > 1:
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)

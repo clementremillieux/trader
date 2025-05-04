@@ -5,7 +5,9 @@ sudo apt install -y make build-essential libssl-dev zlib1g-dev \
   libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
   libffi-dev liblzma-dev
 
-git remote --set-url git@github.com:clementremillieux/trader.git
+git int 
+
+git remote add origin git@github.com:clementremillieux/trader.git
 
 ssh-keygen -t ed25519 -C "clement.remillieux@gmail.com" -y
 
