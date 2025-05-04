@@ -301,17 +301,15 @@ class Trader:
 
                 qty = round(invest_amt / self.client.get_ticker_price(sym), 5)
 
-                sym_eur = sym.replace("USDT", "EUR")
-
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",
-                    sym_eur,
+                    sym,
                     invest_amt,
                     qty,
                 )
 
                 self.client.submit_order(
-                    symbol=sym_eur,
+                    symbol=sym,
                     quantity=qty,
                     side="BUY",
                     order_type="MARKET",

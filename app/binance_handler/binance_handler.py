@@ -208,6 +208,9 @@ class BinanceHandler:
 
         adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)
 
+        if side == "BUY":
+            symbol = symbol.replace("USDT", "EUR")
+
         return self.client.new_order(
             symbol=symbol,
             side=side,
