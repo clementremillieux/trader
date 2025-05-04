@@ -5,6 +5,7 @@ import asyncio
 import json
 
 import math
+
 from pathlib import Path
 
 import random
@@ -37,9 +38,7 @@ class Trader:
         logger (logging.Logger): Logger instance.
     """
 
-    def __init__(
-        self,
-    ) -> None:
+    def __init__(self, main_currency: str) -> None:
         """
         Initialize the Trader.
 
@@ -51,6 +50,8 @@ class Trader:
                 - tranche_pct (float): Percent of portfolio to invest per buy.
             analysis (Any): Module with `run(ticker: str) -> bool`.
         """
+
+        self.main_currency: str = main_currency
 
         self.stop_loss_pct: float = 0.065
 
@@ -104,7 +105,9 @@ class Trader:
         else:
             self.highs = {}
 
-        self.tickers: List[str] = self.client.get_all_tickers()
+        self.tickers: List[str] = self.client.get_all_tickers(
+            quote_asset=self.main_currency
+        )
 
     async def _save_highs(self):
         """Save highs to a temporary file and replace the original."""
@@ -172,8 +175,6 @@ class Trader:
                     self.stop_loss_pct * 100,
                 )
 
-                symbol = f"{symbol}EUR"
-
                 self.client.submit_order(
                     symbol=symbol,
                     quantity=self.floor_decimals(pos.qty, 5),
@@ -202,8 +203,6 @@ class Trader:
                         symbol,
                         pos.qty,
                     )
-
-                    symbol = f"{symbol}EUR"
 
                     self.client.submit_order(
                         symbol=symbol,
@@ -248,17 +247,10 @@ class Trader:
         for index, sym in enumerate(tickers):
             logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
 
-            if sym == "EURUSDT":
-                logger.info("TRADER => Skipping EURUSDT.")
-
-                continue
-
             if (
                 sym in owned
-                or f"{sym}EUR" in owned
-                or f"{sym}USDT" in owned
-                or sym.replace("USDT", "") in owned
-                or sym.replace("EUR", "") in owned
+                or f"{sym}{self.main_currency}" in owned
+                or sym.replace(self.main_currency, "") in owned
             ):
                 logger.info("TRADER => Already own %s. Skipping.", sym)
 
@@ -299,7 +291,17 @@ class Trader:
 
                     continue
 
-                qty = round(invest_amt / self.client.get_ticker_price(sym), 5)
+                ticker_price: Optional[float] = self.client.get_ticker_price(sym)
+
+                if ticker_price is None:
+                    logger.warning(
+                        "TRADER => Ticker price for %s is None. Skipping.",
+                        sym,
+                    )
+
+                    continue
+
+                qty = round(invest_amt / ticker_price, 5)
 
                 logger.info(
                     "TRADER => Placing BUY for %s, amount=%.2f [%.4f]",

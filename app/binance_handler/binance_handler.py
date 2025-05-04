@@ -2,12 +2,13 @@
 
 import math
 
-import re
+
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from binance.spot import Spot
+
 from pydantic import BaseModel
 
 from app.trader.schemas import PortfolioValue, Position
@@ -58,7 +59,7 @@ class BinanceHandler:
     - **api_secret (str)** - The API secret for authentication.
     """
 
-    def __init__(self):
+    def __init__(self, main_currency: str):
         """
         **Initialize Binance Handler**
         __________
@@ -69,6 +70,8 @@ class BinanceHandler:
         - **api_key (str)** - The API key for authentication.
         - **api_secret (str)** - The API secret for authentication.
         """
+
+        self.main_currency: str = main_currency
 
         self.client = Spot(
             api_key=API_KEY,
@@ -93,25 +96,36 @@ class BinanceHandler:
             (
                 float(asset.get("free", 0.0))
                 for asset in user_asset
-                if asset.get("asset") == "EUR"
+                if asset.get("asset") == self.main_currency
             ),
             0.0,
         )
 
-        total_value: float = sum(
-            float(asset.get("free", 0.0))
-            * self.get_ticker_price(symbol=asset.get("asset", ""))
-            if asset.get("asset") != "EUR"
-            else float(asset.get("free", 0.0))
-            for asset in user_asset
-        )
+        total_value: float = buying_power
+
+        for asset in user_asset:
+            if asset.get("asset") == self.main_currency:
+                continue
+
+            ticker_price: Optional[float] = self.get_ticker_price(
+                symbol=asset.get("asset", "")
+            )
+
+            if ticker_price is None:
+                logger.error(
+                    "BINANCE => Error retrieving ticker price for symbol '%s'",
+                    asset.get("asset", ""),
+                )
+                continue
+
+            total_value += float(asset.get("free", 0.0)) * ticker_price
 
         return PortfolioValue(
             total_value=total_value,
             buying_power=buying_power,
         )
 
-    def get_ticker_price(self, symbol: str) -> float:
+    def get_ticker_price(self, symbol: str) -> Optional[float]:
         """
         **Get Ticker Price**
         __________
@@ -125,12 +139,22 @@ class BinanceHandler:
         - **float** - The current price of the ticker.
         """
 
-        if not symbol.endswith("USDT"):
-            symbol = symbol + "EUR"
+        try:
+            if not symbol.endswith(self.main_currency):
+                symbol = symbol + self.main_currency
 
-        ticker_price: Dict[str, Any] = self.client.ticker_price(symbol=symbol)
+            ticker_price: Dict[str, Any] = self.client.ticker_price(symbol=symbol)
 
-        return float(ticker_price.get("price", 0.0))
+            return float(ticker_price.get("price", 0.0))
+
+        except Exception as e:
+            logger.error(
+                "BINANCE => Error retrieving ticker price for symbol '%s': %s",
+                symbol,
+                str(e),
+            )
+
+            return None
 
     def get_positions(self) -> List[Position]:
         """
@@ -152,7 +176,8 @@ class BinanceHandler:
                 price=self.get_ticker_price(symbol=position.get("asset", "")),
             )
             for position in positions_dict
-            if float(position.get("free", 0.0)) > 0.0 and position.get("asset") != "EUR"
+            if float(position.get("free", 0.0)) > 0.0
+            and position.get("asset") != self.main_currency
         ]
 
     def adjust_quantity(self, qty, min_qty, step_size):
@@ -208,38 +233,67 @@ class BinanceHandler:
 
         adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)
 
-        if side == "BUY":
-            symbol = symbol.replace("USDT", "EUR")
+        if not symbol.endswith(self.main_currency):
+            symbol = symbol + self.main_currency
 
-        return self.client.new_order(
-            symbol=symbol,
-            side=side,
-            type=order_type,
-            quantity=adj_qty,
-            price=price,
-            recvWindow=6000,
+        logger.info(
+            "BINANCE => Submitting %s order: symbol=%s, side=%s, qty=%s, price=%s",
+            order_type,
+            symbol,
+            side,
+            adj_qty,
+            price,
         )
+
+        # return self.client.new_order(
+        #     symbol=symbol,
+        #     side=side,
+        #     type=order_type,
+        #     quantity=adj_qty,
+        #     price=price,
+        #     recvWindow=6000,
+        # )
 
     def get_all_tickers(self) -> List[str]:
         """
         **Get All Tickers**
         __________
         **Description:**
-        Retrieves all available tickers from the Binance API.
+        Retrieves all trading pairs available on the Binance exchange.
         __________
         **Returns:**
-        - **List[str]** - A list of all available tickers.
+        - **List[str]** - A list of trading pairs available on the exchange.
+        __________
+        **Raises:**
+        - **Exception** if there is an error retrieving the data.
+        __________
+        **Notes:**
+        - This method retrieves the exchange information and counts the number of trading pairs for each quote asset.
+        - It logs the number of trading pairs for each quote asset.
+        - It returns a list of tickers for the specified main currency.
+        __________
         """
 
         exchange_info: Dict[str, Any] = self.client.exchange_info()
 
+        symbols = exchange_info.get("symbols", [])
+
+        trading_pairs = [s for s in symbols if s.get("status") == "TRADING"]
+
+        # counts: Counter = Counter(s["quoteAsset"] for s in trading_pairs)
+
+        # for quote_asset, nb_pairs in counts.items():
+        #     logger.info("BINANCE => %s has %d trading pairs", quote_asset, nb_pairs)
+
         tickers: List[str] = [
-            symbol["symbol"]
-            for symbol in exchange_info.get("symbols", [])
-            if symbol["status"] == "TRADING" and symbol["quoteAsset"] == "USDT"
+            s["symbol"] for s in trading_pairs if s["quoteAsset"] == self.main_currency
         ]
 
-        logger.info("BINANCE => %d tickers available", len(tickers))
+        logger.info(
+            "BINANCE => %d tickers available for quoteAsset=%s",
+            len(tickers),
+            self.main_currency,
+        )
 
         return tickers
 
@@ -258,8 +312,8 @@ class BinanceHandler:
             pd.DataFrame | None: colonnes ['Close','Volume'], index UTC, ou None en cas d’erreur
         """
 
-        if not ticker.endswith("USDT"):
-            ticker += "USDT"
+        if not ticker.endswith(self.main_currency):
+            ticker += self.main_currency
 
         raw = self.client.klines(
             symbol=ticker,
@@ -331,7 +385,6 @@ class BinanceHandler:
         if lot_filter is None:
             raise ValueError(f"LOT_SIZE filter not found for symbol '{symbol}'")
 
-        # 4) Parse out the values
         min_qty = float(lot_filter["minQty"])
 
         step_size = float(lot_filter["stepSize"])

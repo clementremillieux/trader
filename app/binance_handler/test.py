@@ -1,6 +1,5 @@
 """Test suite for BinanceHandler."""
 
-import datetime
 from typing import List
 
 from app.trader.schemas import PortfolioValue, Position
@@ -34,9 +33,9 @@ print(info.model_dump_json(indent=2))
 
 # print("Found %s rows" % len(stock))
 
-# binance_handler.submit_order(
-#     symbol="BTCEUR",
-#     side="SELL",
-#     order_type="MARKET",
-#     quantity=0.00011553,
-# )
+binance_handler.submit_order(
+    symbol="ORCAUSDT",
+    side="BUY",
+    order_type="MARKET",
+    quantity=5,
+)
