@@ -367,6 +367,6 @@ class Trader:
 
 
 if __name__ == "__main__":
-    trader = Trader()
+    trader = Trader(main_currency="USDC")
 
     trader.run()
