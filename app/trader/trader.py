@@ -240,7 +240,11 @@ class Trader:
 
         buying_power = portfolio_value.buying_power
 
-        owned = {p.symbol for p in (self.client.get_positions() or []) if p.price > 0.1}
+        owned = {
+            p.symbol
+            for p in (self.client.get_positions() or [])
+            if p.price * p.qty > 0.1
+        }
 
         for index, sym in enumerate(tickers):
             logger.info("TRADER => Analyzing %s [%d/%d]", sym, index, len(tickers))
