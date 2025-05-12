@@ -110,11 +110,24 @@ class Trader:
     async def _save_highs(self):
         """Save highs to a temporary file and replace the original."""
 
-        tmp = self.persistence_path.with_suffix(".tmp")
+        for i in range(3):
+            try:
+                tmp = self.persistence_path.with_suffix(".tmp")
 
-        tmp.write_text(json.dumps(self.highs))
+                tmp.write_text(json.dumps(self.highs))
 
-        tmp.replace(self.persistence_path)
+                tmp.replace(self.persistence_path)
+
+                return
+
+            except Exception as e:
+                logger.error("TRADER => Error saving highs [%d/%d]: %s", i, 3, e)
+
+        try:
+            tmp.unlink()
+
+        except Exception as e:
+            logger.error("TRADER => Error deleting temp file: %s", e)
 
     @staticmethod
     def floor_decimals(x: float, decimals: int) -> float:
@@ -322,6 +335,10 @@ class Trader:
                 )
 
                 buying_power -= invest_amt
+
+                self.highs[sym] = 0
+
+                await self._save_highs()
 
     def _run_monitor_in_thread(self):
         """
