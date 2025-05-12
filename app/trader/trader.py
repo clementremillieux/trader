@@ -180,6 +180,8 @@ class Trader:
                     order_type="MARKET",
                 )
 
+                continue
+
             try:
                 signal: AnalysisOutput = await self.analysis.analyze(
                     ticker=symbol,

@@ -229,33 +229,42 @@ class BinanceHandler:
         - **dict** - The response from the Binance API.
         """
 
-        if not symbol.endswith(self.main_currency):
-            symbol = symbol + self.main_currency
+        try:
+            if not symbol.endswith(self.main_currency):
+                symbol = symbol + self.main_currency
 
-        info = self.get_symbol_lot_size(symbol=symbol)
+            info = self.get_symbol_lot_size(symbol=symbol)
 
-        adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)
+            adj_qty = self.adjust_quantity(quantity, info.min_qty, info.step_size)
 
-        if not symbol.endswith(self.main_currency):
-            symbol = symbol + self.main_currency
+            if not symbol.endswith(self.main_currency):
+                symbol = symbol + self.main_currency
 
-        logger.info(
-            "BINANCE => Submitting %s order: symbol=%s, side=%s, qty=%s, price=%s",
-            order_type,
-            symbol,
-            side,
-            adj_qty,
-            price,
-        )
+            logger.info(
+                "BINANCE => Submitting %s order: symbol=%s, side=%s, qty=%s, price=%s",
+                order_type,
+                symbol,
+                side,
+                adj_qty,
+                price,
+            )
 
-        return self.client.new_order(
-            symbol=symbol,
-            side=side,
-            type=order_type,
-            quantity=adj_qty,
-            price=price,
-            recvWindow=6000,
-        )
+            return self.client.new_order(
+                symbol=symbol,
+                side=side,
+                type=order_type,
+                quantity=adj_qty,
+                price=price,
+                recvWindow=6000,
+            )
+        except Exception as e:
+            logger.error(
+                "BINANCE => Error submitting order for symbol '%s': %s",
+                symbol,
+                str(e),
+            )
+
+            return None
 
     def get_all_tickers(self) -> List[str]:
         """
