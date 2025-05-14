@@ -404,18 +404,22 @@ class Scaler:
     """Mise à l'échelle des données dans [0, 1] pour chaque feature."""
 
     feature_ranges = {
-        0: (0.0476190485060215, 0.6726190447807312),
-        1: (0.10119999945163727, 77230.0),
-        2: (-3940.0, 9880.0),
-        3: (-5420.0, 9520.0),
-        4: (0.001832408714108169, 0.9999982714653015),
-        5: (-2711.1240234375, 1537.8070068359375),
-        6: (-1943.899169921875, 1330.8485107421875),
-        7: (-801.3096923828125, 825.0460205078125),
+        0: (0.0, 0.9940476417541504),
+        1: (0.0, 106458.5234375),
+        2: (0.0, 106581.734375),
+        3: (24865.142578125, 108240.0859375),
+        4: (0.0, 35653705728.0),
+        5: (1.2170149332746405e-08, 110011.2578125),
+        6: (-19908.34375, 19450.6640625),
+        7: (-19687.2890625, 18940.6328125),
         8: (0.0, 1.0),
-        9: (0.0, 1.0),
-        10: (0.0, 1197713920.0),
-        11: (-1048523776.0, 1166991104.0),
+        9: (-3587.860107421875, 2443.761962890625),
+        10: (-3145.3359375, 2052.35693359375),
+        11: (-1569.955810546875, 1052.1256103515625),
+        12: (0.0, 1.0),
+        13: (0.0, 1.0),
+        14: (0.0, 132717666304.0),
+        15: (-126326300672.0, 101510324224.0),
     }
 
     def _to_numpy(self, arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
@@ -449,18 +453,22 @@ class Scaler:
             feature_min = np.array(
                 [self.feature_ranges[i][0] for i in range(f)], dtype=np.float32
             )
+
             feature_max = np.array(
                 [self.feature_ranges[i][1] for i in range(f)], dtype=np.float32
             )
         else:
             feature_min = X_2d.min(axis=0).astype(np.float32)
+
             feature_max = X_2d.max(axis=0).astype(np.float32)
 
             # Affiche les nouvelles bornes
             new_ranges = {
                 i: (float(feature_min[i]), float(feature_max[i])) for i in range(f)
             }
+
             print("Nouveau feature_ranges à sauvegarder :")
+
             print(new_ranges)
 
         scaler = MinMaxScaler(feature_range=(0, 1))

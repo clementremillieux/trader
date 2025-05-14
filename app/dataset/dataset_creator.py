@@ -118,6 +118,14 @@ class DatasetCreator:
             ).reshape(-1, 1)
         )
 
+        signal_data.append(np.asarray(stock["Close_1d"]).reshape(-1, 1))
+
+        signal_data.append(np.asarray(stock["Close_5m"]).reshape(-1, 1))
+
+        signal_data.append(np.asarray(stock["Close_btc"]).reshape(-1, 1))
+
+        signal_data.append(np.asarray(stock["Volume_btc"]).reshape(-1, 1))
+
         for signal in signals:
             if signal.column_name in stock.columns:
                 signal_data.append(

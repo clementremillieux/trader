@@ -112,10 +112,6 @@ class Analysis:
         momentum_period: int,
         rsi_period: int,
         nb_windows: int,
-        nb_2: int,
-        nb_last_2: int,
-        distance_0: float,
-        distance_1: float,
         name: str,
     ) -> AnalysisOutput:
         """Analyse le ticker et renvoie BUY, SELL ou HOLD."""
@@ -209,7 +205,7 @@ class Analysis:
             name,
             ticker,
             diff2_1,
-            distance_1,
+            2,
         )
 
         logger.info(
@@ -217,7 +213,7 @@ class Analysis:
             name,
             ticker,
             diff2_0,
-            distance_0,
+            2,
         )
 
         logger.info(
@@ -227,20 +223,19 @@ class Analysis:
             arg,
         )
 
-        if arg == 2 and diff2_1 > distance_1 and diff2_0 > distance_0 and p0[2] > 3:
+        if arg == 2 and diff2_1 > 2 and diff2_0 > 2 and p0[2] > 2:
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.BUY)
 
-        elif arg == 0 and diff0_1 > 2 and diff0_2 > 1 and p0[0] > 3:
+        if arg == 0 and diff0_1 > 2 and diff0_2 > 2 and p0[0] > 1:
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)
 
-        else:
-            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : HOLD", name, ticker)
+        logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : HOLD", name, ticker)
 
-            return AnalysisOutput(state=AnalysisState.HOLD)
+        return AnalysisOutput(state=AnalysisState.HOLD)
 
     async def plot_last_windows(
         self,
@@ -287,7 +282,6 @@ class Analysis:
         stock_data: Optional[pd.DataFrame] = await self.dataset_creator.get_stock_data(
             ticker_name=ticker,
             interval=interval,
-            days=days,
         )
 
         if stock_data is None:

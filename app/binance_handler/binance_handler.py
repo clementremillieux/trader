@@ -2,8 +2,9 @@
 
 import math
 
-
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 import pandas as pd
 
@@ -309,29 +310,8 @@ class BinanceHandler:
 
         return tickers
 
-    def get_historical_data(
-        self,
-        ticker: str,
-        interval: str,
-    ) -> pd.DataFrame:
-        """
-        Récupère l’historique sous forme de DataFrame, colonnes Close & Volume.
-        Args:
-            ticker (str): ex. 'BTCUSDT'
-            interval (str): ex. '1m', '1h', '1d'
-            days (int): nombre de jours à remonter
-        Returns:
-            pd.DataFrame | None: colonnes ['Close','Volume'], index UTC, ou None en cas d’erreur
-        """
-
-        if not ticker.endswith(self.main_currency):
-            ticker += self.main_currency
-
-        raw = self.client.klines(
-            symbol=ticker,
-            interval=interval,
-            limit=1000,
-        )
+    def _klines_to_df(self, raw):
+        """Transform raw kline data into a DataFrame."""
 
         cols = [
             "OpenTime",
@@ -352,11 +332,99 @@ class BinanceHandler:
 
         df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
 
-        df = df.set_index("OpenTime")
+        return df.set_index("OpenTime")[["Close", "Volume", "High", "Low"]].astype(
+            float
+        )
 
-        df = df[["Close", "Volume", "High", "Low"]].astype(float)
+    def get_historical_data(
+        self,
+        ticker: str,
+        interval: str,
+    ) -> pd.DataFrame:
+        """
+        Récupère l’historique sous forme de DataFrame, colonnes Close & Volume.
+        Args:
+            ticker (str): ex. 'BTCUSDT'
+            interval (str): ex. '1m', '1h', '1d'
+            days (int): nombre de jours à remonter
+        Returns:
+            pd.DataFrame | None: colonnes ['Close','Volume'], index UTC, ou None en cas d’erreur
+        """
 
-        return df
+        if not ticker.endswith(self.main_currency):
+            ticker_pair = f"{ticker}{self.main_currency}"
+
+        else:
+            ticker_pair = ticker
+
+        btc_pair = f"BTC{self.main_currency}"
+
+        raw_main = self.client.klines(
+            symbol=ticker_pair,
+            interval=interval,
+            limit=1000,
+        )
+
+        df_main = self._klines_to_df(raw_main)
+
+        if df_main.empty:
+            return df_main  # rien à faire
+
+        M = len(df_main)
+
+        raw_5m = self.client.klines(
+            symbol=ticker_pair,
+            interval="5m",
+            limit=1000,
+        )
+
+        arr_5m = self._klines_to_df(raw_5m)["Close"].tail(M).to_numpy()
+
+        if len(arr_5m) < M:
+            arr_5m = np.concatenate([np.zeros(M - len(arr_5m)), arr_5m])
+
+        df_main["Close_5m"] = arr_5m
+
+        raw_1d = self.client.klines(
+            symbol=ticker_pair,
+            interval="1d",
+            limit=1000,
+        )
+
+        arr_1d = self._klines_to_df(raw_1d)["Close"].to_numpy()
+
+        if len(arr_1d) < M:
+            arr_1d = np.concatenate([np.zeros(M - len(arr_1d)), arr_1d])
+
+        else:
+            arr_1d = arr_1d[-M:]
+
+        df_main["Close_1d"] = arr_1d
+
+        raw_btc = self.client.klines(
+            symbol=btc_pair,
+            interval=interval,
+            limit=1000,
+        )
+
+        df_btc = self._klines_to_df(raw_btc).tail(M)
+
+        arr_btc_close = df_btc["Close"].to_numpy()
+
+        arr_btc_vol = df_btc["Volume"].to_numpy()
+
+        if len(arr_btc_close) < M:
+            pad = M - len(arr_btc_close)
+
+            arr_btc_close = np.concatenate([np.zeros(pad), arr_btc_close])
+
+            arr_btc_vol = np.concatenate([np.zeros(pad), arr_btc_vol])
+
+        df_main["Close_btc"] = arr_btc_close
+
+        df_main["Volume_btc"] = arr_btc_vol
+
+        return df_main
 
     def get_symbol_lot_size(self, symbol: str) -> SymbolInfos:
         """
