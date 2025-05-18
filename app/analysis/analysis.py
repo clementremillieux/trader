@@ -223,12 +223,12 @@ class Analysis:
             arg,
         )
 
-        if arg == 2 and diff2_1 > 2 and diff2_0 > 2 and p0[2] > 4:
+        if arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p0[2] > 4:
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.BUY)
 
-        if arg == 0 and diff0_1 > 2 and diff0_2 > 2 and p0[0] > 4:
+        if arg == 0 and diff0_1 > 4 and diff0_2 > 4 and p0[0] > 4:
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)
