@@ -332,9 +332,18 @@ class BinanceHandler:
 
         df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
 
-        return df.set_index("OpenTime")[["Close", "Volume", "High", "Low"]].astype(
-            float
-        )
+        return df.set_index("OpenTime")[
+            [
+                "Close",
+                "Volume",
+                "High",
+                "Low",
+                "QuoteAssetVolume",
+                "NumTrades",
+                "TakerBuyBaseVolume",
+                "TakerBuyQuoteVolume",
+            ]
+        ].astype(float)
 
     def get_historical_data(
         self,
@@ -362,7 +371,7 @@ class BinanceHandler:
         raw_main = self.client.klines(
             symbol=ticker_pair,
             interval=interval,
-            limit=1000,
+            limit=1500,
         )
 
         df_main = self._klines_to_df(raw_main)
@@ -375,7 +384,7 @@ class BinanceHandler:
         raw_5m = self.client.klines(
             symbol=ticker_pair,
             interval="5m",
-            limit=1000,
+            limit=1500,
         )
 
         arr_5m = self._klines_to_df(raw_5m)["Close"].tail(M).to_numpy()
@@ -388,7 +397,7 @@ class BinanceHandler:
         raw_1d = self.client.klines(
             symbol=ticker_pair,
             interval="1d",
-            limit=1000,
+            limit=1500,
         )
 
         arr_1d = self._klines_to_df(raw_1d)["Close"].to_numpy()
@@ -404,7 +413,7 @@ class BinanceHandler:
         raw_btc = self.client.klines(
             symbol=btc_pair,
             interval=interval,
-            limit=1000,
+            limit=1500,
         )
 
         df_btc = self._klines_to_df(raw_btc).tail(M)
@@ -423,6 +432,59 @@ class BinanceHandler:
         df_main["Close_btc"] = arr_btc_close
 
         df_main["Volume_btc"] = arr_btc_vol
+
+        return df_main
+
+    def get_historical_data_v2(
+        self, ticker: str, interval: str, max_value: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        **Get Historical Data**
+        __________
+        **Description:**
+        Retrieves historical data for a specific ticker and interval from the Binance API.
+        __________
+        **Parameters:**
+        - **ticker (str)** - The trading pair symbol (e.g., 'BTCUSDT').
+        - **interval (str)** - The time interval for the data (e.g., '1m', '1h', '1d').
+        __________
+        **Returns:**
+        - **pd.DataFrame** - A DataFrame containing the historical data.
+        """
+
+        if not ticker.endswith(self.main_currency):
+            ticker_pair = f"{ticker}{self.main_currency}"
+
+        else:
+            ticker_pair = ticker
+
+        stock = self.client.klines(
+            symbol=ticker_pair,
+            interval=interval,
+            limit=1000,
+        )
+
+        full_stock = stock
+
+        while True:
+            stock = self.client.klines(
+                symbol=ticker_pair,
+                interval=interval,
+                limit=1000,
+                startTime=stock[0][0] - 1000 * 60 * 60 * 24,
+            )
+
+            full_stock = stock + full_stock
+
+            if len(stock) < 1000:
+                break
+
+            if max_value is not None and len(full_stock) >= max_value:
+                full_stock = full_stock[-max_value:]
+
+                break
+
+        df_main = self._klines_to_df(full_stock)
 
         return df_main
 

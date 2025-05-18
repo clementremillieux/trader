@@ -14,9 +14,18 @@ symbols = exchange_info.get("symbols", [])
 
 trading_pairs = [s for s in symbols if s.get("status") == "TRADING"]
 
+print(trading_pairs)
 tickers: List[str] = [s["symbol"] for s in trading_pairs]
 
+
 print(tickers)
+
+print(len(tickers))
+
+tickers_not_in_usd = [ticker for ticker in tickers if not ticker.endswith("USDT")]
+
+
+print(len(tickers_not_in_usd))
 
 # portfolio: PortfolioValue = binance_handler.get_portfolio()
 

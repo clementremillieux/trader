@@ -33,9 +33,9 @@ print(info.model_dump_json(indent=2))
 
 # print("Found %s rows" % len(stock))
 
-binance_handler.submit_order(
-    symbol="ORCAUSDT",
-    side="BUY",
-    order_type="MARKET",
-    quantity=5,
-)
+# binance_handler.submit_order(
+#     symbol="ORCAUSDT",
+#     side="BUY",
+#     order_type="MARKET",
+#     quantity=5,
+# )
