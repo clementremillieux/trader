@@ -218,7 +218,7 @@ class Trader:
                 ) / positions_saved.positions[symbol].buy_price
 
                 logger.info(
-                    "TRADER => %s drawdown base = %.2f%% (vs base %.2f)",
+                    "TRADER => %s drawdown base = %.6f%% (vs base %.6f)",
                     symbol,
                     drawdown_base * 100,
                     positions_saved.positions[symbol].buy_price,
@@ -229,7 +229,7 @@ class Trader:
                 ) / positions_saved.positions[symbol].high_price
 
                 logger.info(
-                    "TRADER => %s drawdown high = %.2f%% (vs high %.2f)",
+                    "TRADER => %s drawdown high = %.6f%% (vs high %.6f)",
                     symbol,
                     drawdown_high * 100,
                     positions_saved.positions[symbol].high_price,
@@ -237,7 +237,7 @@ class Trader:
 
                 if drawdown_base < -self.stop_loss_pct_base:
                     logger.info(
-                        "TRADER => %s hit trailing base stop (%.2f%%). Closing.",
+                        "TRADER => %s hit trailing base stop (%.6f%%). Closing.",
                         symbol,
                         self.stop_loss_pct_base * 100,
                     )

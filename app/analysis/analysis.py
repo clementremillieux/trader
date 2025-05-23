@@ -147,7 +147,7 @@ class Analysis:
 
             arg = p.argmax()
 
-            return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 2
+            return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
 
         def _is_sell(p: np.ndarray) -> bool:
             """Conditions SELL pour une ligne de proba."""
