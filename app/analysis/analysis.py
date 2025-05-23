@@ -139,12 +139,7 @@ class Analysis:
         def _is_buy(p: np.ndarray) -> bool:
             """Conditions BUY pour une ligne de proba (index 0: SELL, 1: HOLD, 2: BUY)."""
 
-            logger.info(
-                "ANALYZE =>\t- (%s) [%s] PROBS BUY : %s",
-                name,
-                ticker,
-                probs[-size_watch_buy:],
-            )
+            logger.info("ANALYZE =>\t- (%s) [%s] PROBS BUY : %s", name, ticker, p)
 
             diff2_1 = p[2] - p[1]
 
@@ -161,7 +156,7 @@ class Analysis:
                 "ANALYZE =>\t- (%s) [%s] PROBS SELL : %s",
                 name,
                 ticker,
-                probs[-size_watch_sell:],
+                p,
             )
 
             diff0_1 = p[0] - p[1]

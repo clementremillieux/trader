@@ -81,9 +81,9 @@ class Trader:
 
         self.size_watch_buy: int = 1
 
-        self.size_watch_sell: int = 2
+        self.size_watch_sell: int = 3
 
-        self.stop_loss_pct_base: float = 0.03
+        self.stop_loss_pct_base: float = 0.05
 
         self.stop_loss_pct_high: float = 0.015
 
