@@ -4,7 +4,7 @@ import math
 
 from typing import Any, Dict, List, Optional
 
-import numpy as np
+import httpx
 
 import pandas as pd
 
@@ -19,6 +19,8 @@ from config.logger_config import logger
 API_KEY = "RRx439X2aBvHzrodPRhgNPAw9hyr48lYFqenjNIjWql25a9kuMMcdV7dRnjE9YsU"
 
 API_SECRET = "RKSfisReVgtRa1bMqrzJjAaVhZ6OjAW9ATdLK3XC9gcBkYuCmOvC9ms77od4OoVp"
+
+BASE_URL = "https://api.binance.com"
 
 
 class SymbolInfos(BaseModel):
@@ -79,6 +81,56 @@ class BinanceHandler:
             api_secret=API_SECRET,
             base_url="https://api.binance.com",
         )
+
+        self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=30.0, http2=True)
+
+    def get_symbols_dict(self) -> Dict[str, str]:
+        """
+        **Get Symbols Dictionary**
+        __________
+        **Description:**
+        Retrieves a dictionary of symbols and their corresponding base assets from the Binance API.
+        __________
+        **Returns:**
+        - **Dict[str, str]** - A dictionary where the keys are symbols and the values are base assets.
+        """
+
+        exchange_info: Dict[str, Any] = self.client.exchange_info()
+
+        symbols = exchange_info.get("symbols", [])
+
+        trading_pairs = [s for s in symbols if s.get("status") == "TRADING"]
+
+        sym_base_asset: Dict[str, str] = {
+            s["symbol"]: s["baseAsset"] for s in trading_pairs
+        }
+
+        return sym_base_asset
+
+    def get_tickers_existing_both_main_currency_usdt(self) -> List[str]:
+        """
+        **Get Tickers**
+        """
+
+        exchange_info: Dict[str, Any] = self.client.exchange_info()
+
+        symbols = exchange_info.get("symbols", [])
+
+        trading_pairs = [s for s in symbols if s.get("status") == "TRADING"]
+
+        tickers: List[str] = [s["symbol"] for s in trading_pairs]
+
+        tickers_in_usdt = [ticker for ticker in tickers if ticker.endswith("USDT")]
+
+        tickers_in_usdc = [ticker for ticker in tickers if ticker.endswith("USDC")]
+
+        tickers_in_usdt_and_usdc = [
+            ticker
+            for ticker in tickers_in_usdc
+            if ticker.replace("USDC", "USDT") in tickers_in_usdt
+        ]
+
+        return tickers_in_usdt_and_usdc
 
     def get_portfolio(self) -> PortfolioValue:
         """
@@ -293,11 +345,6 @@ class BinanceHandler:
 
         trading_pairs = [s for s in symbols if s.get("status") == "TRADING"]
 
-        # counts: Counter = Counter(s["quoteAsset"] for s in trading_pairs)
-
-        # for quote_asset, nb_pairs in counts.items():
-        #     logger.info("BINANCE => %s has %d trading pairs", quote_asset, nb_pairs)
-
         tickers: List[str] = [
             s["symbol"] for s in trading_pairs if s["quoteAsset"] == self.main_currency
         ]
@@ -310,9 +357,31 @@ class BinanceHandler:
 
         return tickers
 
-    def _klines_to_df(self, raw):
-        """Transform raw kline data into a DataFrame."""
+    async def _query(self, path: str, params: dict | None = None) -> list[list]:
+        """Requête GET générique sur l'API Binance (endpoint public)."""
 
+        url = path if path.startswith("http") else f"{BASE_URL}{path}"
+
+        resp = await self._client.get(url, params=params)
+
+        resp.raise_for_status()
+
+        return resp.json()
+
+    async def klines(self, symbol: str, interval: str, **kwargs) -> list[list]:
+        """
+        Kline/Candlestick Data  —  GET /api/v3/klines
+        https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints#klinecandlestick-data
+        """
+        if not symbol or not interval:
+            raise ValueError("symbol et interval sont obligatoires")
+
+        params = {"symbol": symbol, "interval": interval, **kwargs}
+
+        return await self._query("/api/v3/klines", params)
+
+    @staticmethod
+    def _klines_to_df(raw: List[List]) -> pd.DataFrame:
         cols = [
             "OpenTime",
             "Open",
@@ -329,7 +398,6 @@ class BinanceHandler:
         ]
 
         df = pd.DataFrame(raw, columns=cols)
-
         df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
 
         return df.set_index("OpenTime")[
@@ -338,6 +406,7 @@ class BinanceHandler:
                 "Volume",
                 "High",
                 "Low",
+                "Open",
                 "QuoteAssetVolume",
                 "NumTrades",
                 "TakerBuyBaseVolume",
@@ -345,129 +414,25 @@ class BinanceHandler:
             ]
         ].astype(float)
 
-    def get_historical_data(
-        self,
-        ticker: str,
-        interval: str,
-    ) -> pd.DataFrame:
-        """
-        Récupère l’historique sous forme de DataFrame, colonnes Close & Volume.
-        Args:
-            ticker (str): ex. 'BTCUSDT'
-            interval (str): ex. '1m', '1h', '1d'
-            days (int): nombre de jours à remonter
-        Returns:
-            pd.DataFrame | None: colonnes ['Close','Volume'], index UTC, ou None en cas d’erreur
-        """
-
-        if not ticker.endswith(self.main_currency):
-            ticker_pair = f"{ticker}{self.main_currency}"
-
-        else:
-            ticker_pair = ticker
-
-        btc_pair = f"BTC{self.main_currency}"
-
-        raw_main = self.client.klines(
-            symbol=ticker_pair,
-            interval=interval,
-            limit=1500,
-        )
-
-        df_main = self._klines_to_df(raw_main)
-
-        if df_main.empty:
-            return df_main  # rien à faire
-
-        M = len(df_main)
-
-        raw_5m = self.client.klines(
-            symbol=ticker_pair,
-            interval="5m",
-            limit=1500,
-        )
-
-        arr_5m = self._klines_to_df(raw_5m)["Close"].tail(M).to_numpy()
-
-        if len(arr_5m) < M:
-            arr_5m = np.concatenate([np.zeros(M - len(arr_5m)), arr_5m])
-
-        df_main["Close_5m"] = arr_5m
-
-        raw_1d = self.client.klines(
-            symbol=ticker_pair,
-            interval="1d",
-            limit=1500,
-        )
-
-        arr_1d = self._klines_to_df(raw_1d)["Close"].to_numpy()
-
-        if len(arr_1d) < M:
-            arr_1d = np.concatenate([np.zeros(M - len(arr_1d)), arr_1d])
-
-        else:
-            arr_1d = arr_1d[-M:]
-
-        df_main["Close_1d"] = arr_1d
-
-        raw_btc = self.client.klines(
-            symbol=btc_pair,
-            interval=interval,
-            limit=1500,
-        )
-
-        df_btc = self._klines_to_df(raw_btc).tail(M)
-
-        arr_btc_close = df_btc["Close"].to_numpy()
-
-        arr_btc_vol = df_btc["Volume"].to_numpy()
-
-        if len(arr_btc_close) < M:
-            pad = M - len(arr_btc_close)
-
-            arr_btc_close = np.concatenate([np.zeros(pad), arr_btc_close])
-
-            arr_btc_vol = np.concatenate([np.zeros(pad), arr_btc_vol])
-
-        df_main["Close_btc"] = arr_btc_close
-
-        df_main["Volume_btc"] = arr_btc_vol
-
-        return df_main
-
-    def get_historical_data_v2(
+    async def get_historical_data_v2(
         self, ticker: str, interval: str, max_value: Optional[int] = None
     ) -> pd.DataFrame:
         """
         **Get Historical Data**
-        __________
-        **Description:**
-        Retrieves historical data for a specific ticker and interval from the Binance API.
-        __________
-        **Parameters:**
-        - **ticker (str)** - The trading pair symbol (e.g., 'BTCUSDT').
-        - **interval (str)** - The time interval for the data (e.g., '1m', '1h', '1d').
-        __________
-        **Returns:**
-        - **pd.DataFrame** - A DataFrame containing the historical data.
         """
 
-        if not ticker.endswith(self.main_currency):
-            ticker_pair = f"{ticker}{self.main_currency}"
+        ticker_pair: str = ticker
 
-        else:
-            ticker_pair = ticker
-
-        stock = self.client.klines(
+        stock: List[List] = await self.klines(
             symbol=ticker_pair,
             interval=interval,
             limit=1000,
         )
 
-        full_stock = stock
+        full_stock: List[List] = stock
 
         while True:
-            stock = self.client.klines(
+            stock = await self.klines(
                 symbol=ticker_pair,
                 interval=interval,
                 limit=1000,
@@ -481,12 +446,9 @@ class BinanceHandler:
 
             if max_value is not None and len(full_stock) >= max_value:
                 full_stock = full_stock[-max_value:]
-
                 break
 
-        df_main = self._klines_to_df(full_stock)
-
-        return df_main
+        return self._klines_to_df(full_stock)
 
     def get_symbol_lot_size(self, symbol: str) -> SymbolInfos:
         """

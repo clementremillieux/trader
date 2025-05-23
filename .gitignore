@@ -1,3 +1,4 @@
 *pth
 *.pyc
 model/
+ticker_dataset_train.pickle

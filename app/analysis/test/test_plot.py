@@ -48,16 +48,6 @@ async def test_analysis():
         patch_size=int(window_size / 8),
     )
 
-    await analysis.plot_last_windows(
-        ticker=ticker,
-        window_size=window_size,
-        interval=interval,
-        days=days,
-        momentum_period=momentum_period,
-        rsi_period=rsi_period,
-        nb_windows=200,
-    )
-
 
 if __name__ == "__main__":
     import asyncio

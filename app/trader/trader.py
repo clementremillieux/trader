@@ -79,6 +79,10 @@ class Trader:
 
         self.main_currency: str = main_currency
 
+        self.size_watch_buy: int = 1
+
+        self.size_watch_sell: int = 2
+
         self.stop_loss_pct_base: float = 0.03
 
         self.stop_loss_pct_high: float = 0.015
@@ -111,12 +115,12 @@ class Trader:
         ]
 
         self.analysis = Analysis(
-            model_path="app/model/model_epoch_crypto_42.pth",
+            model_path="app/model/model_epoch_crypto_14.pth",
             signals=signals,
-            num_historical_features=16,
+            num_historical_features=40,
             encoder_length=self.window_size,
             hidden_size=1024,
-            dropout=0.5,
+            dropout=0.6,
             lstm_layers=4,
             n_heads=8,
             num_attention_layers=8,
@@ -125,7 +129,20 @@ class Trader:
 
         self.persistence_path = Path("./app/trader/high_values.json")
 
-        self.tickers: List[str] = self.client.get_all_tickers()
+        self.tickers: List[str] = (
+            self.client.get_tickers_existing_both_main_currency_usdt()
+        )
+
+        self.symbols_dict: Dict[str, str] = self.client.get_symbols_dict()
+
+        logger.info(
+            "TRADER => Found %d tradable tickers",
+            len(self.tickers),
+        )
+
+        print(self.tickers)
+
+        print(self.symbols_dict)
 
     async def _save_positions(self, positions: PositionsSaved) -> None:
         """Save positions to a temporary file and replace the original."""
@@ -295,8 +312,11 @@ class Trader:
                     interval=self.interval,
                     momentum_period=self.momentum_period,
                     rsi_period=self.rsi_period,
-                    nb_windows=1,
+                    nb_windows=max(self.size_watch_buy, self.size_watch_sell),
                     name="monitor",
+                    sym_base_asset=self.symbols_dict,
+                    size_watch_buy=self.size_watch_buy,
+                    size_watch_sell=self.size_watch_sell,
                 )
 
                 if signal.state == AnalysisState.SELL:
@@ -314,7 +334,9 @@ class Trader:
                     )
 
             except Exception as e:
-                logger.error("TRADER => Analysis error for %s: %s", symbol, e)
+                logger.error(
+                    "TRADER => Analysis error for %s: %s", symbol, e, exc_info=True
+                )
 
                 continue
 
@@ -395,8 +417,11 @@ class Trader:
                     interval=self.interval,
                     momentum_period=self.momentum_period,
                     rsi_period=self.rsi_period,
-                    nb_windows=1,
                     name="scan",
+                    sym_base_asset=self.symbols_dict,
+                    nb_windows=max(self.size_watch_buy, self.size_watch_sell),
+                    size_watch_buy=self.size_watch_buy,
+                    size_watch_sell=self.size_watch_sell,
                 )
 
             except Exception as e:
