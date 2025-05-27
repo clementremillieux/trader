@@ -1,6 +1,6 @@
 """Compute various mathematical functions for signals."""
 
-from typing import List, Union
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
 import pandas as pd
@@ -448,6 +448,7 @@ class Scaler:
 
     def _to_numpy(self, arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
         """Torch → NumPy sans lien au graphe de calcul."""
+
         if isinstance(arr, torch.Tensor):
             return arr.detach().cpu().numpy()
 
@@ -461,10 +462,16 @@ class Scaler:
         return arr_np
 
     def scale(
-        self, X: Union[np.ndarray, torch.Tensor], is_use_feature_ranges: bool = True
+        self,
+        X: Union[np.ndarray, torch.Tensor],
     ) -> Union[np.ndarray, torch.Tensor]:
         """
-        Scale data to [0, 1] using MinMaxScaler.
+        Mise à l'échelle feature-wise dans [0, 1].
+
+        - Si `is_use_feature_ranges` est True, on prend les bornes pré-enregistrées.
+        - Sinon, on calcule min / max sur X et on les affiche pour archivage.
+
+        Garde le même type en sortie qu'en entrée (NumPy <-> Torch).
         """
 
         X_np = self._to_numpy(X)
@@ -473,27 +480,13 @@ class Scaler:
 
         X_2d = X_np.reshape(-1, f)
 
-        if is_use_feature_ranges:
-            feature_min = np.array(
-                [self.feature_ranges[i][0] for i in range(f)], dtype=np.float32
-            )
+        feature_min = np.array(
+            [self.feature_ranges[i][0] for i in range(f)], dtype=np.float32
+        )
 
-            feature_max = np.array(
-                [self.feature_ranges[i][1] for i in range(f)], dtype=np.float32
-            )
-        else:
-            feature_min = X_2d.min(axis=0).astype(np.float32)
-
-            feature_max = X_2d.max(axis=0).astype(np.float32)
-
-            # Affiche les nouvelles bornes
-            new_ranges = {
-                i: (float(feature_min[i]), float(feature_max[i])) for i in range(f)
-            }
-
-            print("Nouveau feature_ranges à sauvegarder :")
-
-            print(new_ranges)
+        feature_max = np.array(
+            [self.feature_ranges[i][1] for i in range(f)], dtype=np.float32
+        )
 
         scaler = MinMaxScaler(feature_range=(0, 1))
 

@@ -33,8 +33,8 @@ from config.logger_config import logger
 
 os.environ["CURL_CA_BUNDLE"] = certifi.where()
 
-
 API_KEY = "RRx439X2aBvHzrodPRhgNPAw9hyr48lYFqenjNIjWql25a9kuMMcdV7dRnjE9YsU"
+
 API_SECRET = "RKSfisReVgtRa1bMqrzJjAaVhZ6OjAW9ATdLK3XC9gcBkYuCmOvC9ms77od4OoVp"
 
 BASE_URL = "https://api.binance.com"  # HTTPS comme demandé
@@ -256,10 +256,10 @@ def create_binary_signal(
 
             max_future = np.max(window)
 
-            if max_future >= (1.0 + c) * smoothed_current:
+            if max_future < (1.0 - c) * smoothed_current:
                 binary_signal[i] = 2
 
-            elif max_future >= (1.0 + (c / 2)) * smoothed_current:
+            elif max_future < smoothed_current:
                 binary_signal[i] = 1
 
             else:
@@ -267,10 +267,10 @@ def create_binary_signal(
         else:
             window = signal[start_idx : end_idx + 1]
 
-            if np.any(window >= (1.0 + c) * signal[i]):
+            if np.any(window < (1.0 - c) * signal[i]):
                 binary_signal[i] = 2
 
-            elif np.any(window >= (1.0 + (c / 2)) * signal[i]):
+            elif np.any(window < (1.0 - (c / 2)) * signal[i]):
                 binary_signal[i] = 1
 
             else:
@@ -1370,7 +1370,7 @@ def save_new_batch(path: str, batch: Any) -> None:
 async def run():
     """Main function to run the training process."""
 
-    c = 0.2
+    c = 0.02
 
     n = 40
 
@@ -1394,7 +1394,7 @@ async def run():
 
     step = 30
 
-    start = 28 * step
+    start = 0 * step
 
     index_saved = start + 1
 
@@ -1422,7 +1422,7 @@ async def run():
             continue
 
         save_new_batch(
-            path=f"./ticker_dataset_train_{index_saved}.pickle",
+            path=f"./ticker_dataset_train__sell_{index_saved}.pickle",
             batch=ticker_dataset_train_batch,
         )
 
@@ -1454,7 +1454,7 @@ async def run():
                 continue
 
             save_new_batch(
-                path=f"./ticker_dataset_val_{index_saved}.pickle",
+                path=f"./ticker_dataset_val_sell_{index_saved}.pickle",
                 batch=ticker_dataset_val_batch,
             )
 
@@ -1463,11 +1463,11 @@ async def run():
 
 
 def scale_dataset():
-    with open("./ticker_dataset_train.pickle", "rb") as f:
+    with open("./ticker_dataset_train_sell.pickle", "rb") as f:
         ticker_dataset_train = pickle.load(f)
 
     # Load the validation dataset
-    with open("./ticker_dataset_val.pickle", "rb") as f:
+    with open("./ticker_dataset_val_sell.pickle", "rb") as f:
         ticker_dataset_val = pickle.load(f)
 
     print(f"Train shape : {ticker_dataset_train.X.shape}")
@@ -1544,19 +1544,19 @@ def scale_dataset():
 
     pickle.dump(
         ticker_dataset_train,
-        open("./ticker_dataset_train_scaled.pickle", "wb"),
+        open("./ticker_dataset_train_sell_scaled.pickle", "wb"),
     )
 
     pickle.dump(
         ticker_dataset_val,
-        open("./ticker_dataset_val_scaled.pickle", "wb"),
+        open("./ticker_dataset_val_sell_scaled.pickle", "wb"),
     )
 
-    with open("./ticker_dataset_train_scaled.pickle", "rb") as f:
+    with open("./ticker_dataset_train_sell_scaled.pickle", "rb") as f:
         ticker_dataset_train_scaled = pickle.load(f)
 
     # Load the validation dataset
-    with open("./ticker_dataset_val_scaled.pickle", "rb") as f:
+    with open("./ticker_dataset_val_sell_scaled.pickle", "rb") as f:
         ticker_dataset_val_scaled = pickle.load(f)
 
     print(f"Train shape : {ticker_dataset_train_scaled.X.shape}")
