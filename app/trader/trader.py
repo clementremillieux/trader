@@ -81,7 +81,7 @@ class Trader:
 
         self.size_watch_buy: int = 3
 
-        self.size_watch_sell: int = 5
+        self.size_watch_sell: int = 3
 
         self.stop_loss_pct_base: float = 0.1
 
@@ -116,6 +116,7 @@ class Trader:
 
         self.analysis = Analysis(
             model_path="app/model/model_epoch_crypto_10.pth",
+            sell_model_path="app/model/model_epoch_crypto_sell_97.pth",
             signals=signals,
             num_historical_features=40,
             encoder_length=self.window_size,

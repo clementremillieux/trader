@@ -254,12 +254,12 @@ def create_binary_signal(
 
             smoothed_current = np.mean(signal[i - smoothing_window : i + 1])
 
-            max_future = np.max(window)
+            min_future = np.min(window)
 
-            if max_future < (1.0 - c) * smoothed_current:
+            if min_future < (1.0 - c) * smoothed_current:
                 binary_signal[i] = 2
 
-            elif max_future < smoothed_current:
+            elif min_future < smoothed_current:
                 binary_signal[i] = 1
 
             else:
@@ -1370,9 +1370,9 @@ def save_new_batch(path: str, batch: Any) -> None:
 async def run():
     """Main function to run the training process."""
 
-    c = 0.02
+    c = 0.05
 
-    n = 40
+    n = 5
 
     window_size = 300
 
@@ -1392,7 +1392,7 @@ async def run():
 
     print(f"Ticker val : {len(tickers_name_val)}")
 
-    step = 30
+    step = 5
 
     start = 0 * step
 

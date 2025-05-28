@@ -3,3 +3,4 @@
 model/
 ticker_dataset_train.pickle
 trader/high_values.json
+ticker_dataset*

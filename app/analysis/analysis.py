@@ -25,6 +25,7 @@ class Analysis:
     def __init__(
         self,
         model_path: str,
+        sell_model_path: str,
         signals: List[DatasetSignal],
         num_historical_features: int,
         encoder_length: int,
@@ -42,6 +43,19 @@ class Analysis:
 
         self.runner = Runner(
             model_path=model_path,
+            num_historical_features=num_historical_features,
+            encoder_length=encoder_length,
+            hidden_size=hidden_size,
+            dropout=dropout,
+            lstm_layers=lstm_layers,
+            n_heads=n_heads,
+            num_attention_layers=num_attention_layers,
+            pooling_type=pooling_type,
+            patch_size=patch_size,
+        )
+
+        self.sell_runner = Runner(
+            model_path=sell_model_path,
             num_historical_features=num_historical_features,
             encoder_length=encoder_length,
             hidden_size=hidden_size,
@@ -136,6 +150,10 @@ class Analysis:
 
         probs: np.ndarray = logits.cpu().detach().numpy()
 
+        logits_sell: torch.Tensor = self.sell_runner.run(data=X)
+
+        probs_sell: np.ndarray = logits_sell.cpu().detach().numpy()
+
         def _is_buy(p: np.ndarray) -> bool:
             """Conditions BUY pour une ligne de proba (index 0: SELL, 1: HOLD, 2: BUY)."""
 
@@ -170,18 +188,22 @@ class Analysis:
         watch_buy = probs[-size_watch_buy:] if size_watch_buy <= len(probs) else probs
 
         watch_sell = (
-            probs[-size_watch_sell:] if size_watch_sell <= len(probs) else probs
+            probs_sell[-size_watch_sell:]
+            if size_watch_sell <= len(probs_sell)
+            else probs_sell
         )
 
-        if all(_is_buy(p) for p in watch_buy):
-            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
-
-            return AnalysisOutput(state=AnalysisState.BUY)
-
-        if all(_is_sell(p) for p in watch_sell):
+        if any(_is_sell(p) for p in watch_sell):
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)
+
+        if all(_is_buy(p) for p in watch_buy) and not any(
+            _is_sell(p) for p in watch_sell
+        ):
+            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
+
+            return AnalysisOutput(state=AnalysisState.BUY)
 
         logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : HOLD", name, ticker)
 
