@@ -1394,7 +1394,7 @@ async def run():
 
     step = 5
 
-    start = 0 * step
+    start = 99 * step
 
     index_saved = start + 1
 

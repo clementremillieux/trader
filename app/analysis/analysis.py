@@ -177,13 +177,13 @@ class Analysis:
                 p,
             )
 
-            diff0_1 = p[0] - p[1]
+            diff2_1 = p[2] - p[1]
 
-            diff0_2 = p[0] - p[2]
+            diff2_0 = p[2] - p[0]
 
             arg = p.argmax()
 
-            return arg == 0 and diff0_1 > 4 and diff0_2 > 4 and p[0] > 4
+            return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
 
         watch_buy = probs[-size_watch_buy:] if size_watch_buy <= len(probs) else probs
 
