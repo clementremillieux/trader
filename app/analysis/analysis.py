@@ -146,9 +146,9 @@ class Analysis:
 
         X = Scaler().scale(X=dataset.X)
 
-        logits: torch.Tensor = self.runner.run(data=X)
+        logits_buy: torch.Tensor = self.runner.run(data=X)
 
-        probs: np.ndarray = logits.cpu().detach().numpy()
+        probs_buy: np.ndarray = logits_buy.cpu().detach().numpy()
 
         logits_sell: torch.Tensor = self.sell_runner.run(data=X)
 
@@ -185,7 +185,11 @@ class Analysis:
 
             return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
 
-        watch_buy = probs[-size_watch_buy:] if size_watch_buy <= len(probs) else probs
+        watch_buy = (
+            probs_buy[-size_watch_buy:]
+            if size_watch_buy <= len(probs_buy)
+            else probs_buy
+        )
 
         watch_sell = (
             probs_sell[-size_watch_sell:]
@@ -198,9 +202,7 @@ class Analysis:
 
             return AnalysisOutput(state=AnalysisState.SELL)
 
-        if all(_is_buy(p) for p in watch_buy) and not any(
-            _is_sell(p) for p in watch_sell
-        ):
+        if all(_is_buy(p) for p in watch_buy):
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.BUY)
