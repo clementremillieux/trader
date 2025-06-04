@@ -157,31 +157,42 @@ class Analysis:
         def _is_buy(p: np.ndarray) -> bool:
             """Conditions BUY pour une ligne de proba (index 0: SELL, 1: HOLD, 2: BUY)."""
 
-            logger.info("ANALYZE =>\t- (%s) [%s] PROBS BUY : %s", name, ticker, p)
-
             diff2_1 = p[2] - p[1]
 
             diff2_0 = p[2] - p[0]
 
             arg = p.argmax()
+
+            logger.info(
+                "ANALYZE =>\t- (%s) [%s] PROBS BUY : %s ; DIFF 1: %s, 0: %s ; ARGMAX: %s",
+                name,
+                ticker,
+                p,
+                diff2_1,
+                diff2_0,
+                arg,
+            )
 
             return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
 
         def _is_sell(p: np.ndarray) -> bool:
             """Conditions SELL pour une ligne de proba."""
 
-            logger.info(
-                "ANALYZE =>\t- (%s) [%s] PROBS SELL : %s",
-                name,
-                ticker,
-                p,
-            )
-
             diff2_1 = p[2] - p[1]
 
             diff2_0 = p[2] - p[0]
 
             arg = p.argmax()
+
+            logger.info(
+                "ANALYZE =>\t- (%s) [%s] PROBS SELL : %s; DIFF 1: %s, 0: %s ; ARGMAX: %s",
+                name,
+                ticker,
+                p,
+                diff2_1,
+                diff2_0,
+                arg,
+            )
 
             return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
 
