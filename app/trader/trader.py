@@ -79,15 +79,15 @@ class Trader:
 
         self.main_currency: str = main_currency
 
-        self.size_watch_buy: int = 5
+        self.size_watch_buy: int = 2
 
-        self.size_watch_sell: int = 3
+        self.size_watch_sell: int = 2
 
         self.stop_loss_pct_base: float = 0.05
 
-        self.stop_loss_pct_high: float = 0.015
+        self.stop_loss_pct_high: float = 0.02
 
-        self.tranche_pct: float = 0.075
+        self.tranche_pct: float = 0.1
 
         self.window_size = 300
 

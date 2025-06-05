@@ -1,0 +1,119 @@
+####################
+
+####################
+
+delta_buy = 0.1
+
+min_prob_buy = -100
+
+delta_sell = 0.1
+
+min_prob_sell = -100
+
+buy_signal = (
+    (probs_buy[:, 2] - probs_buy[:, 1] > delta_buy)
+    & (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy)
+    & (probs_buy[:, 2] > min_prob_buy)
+).astype(int)
+
+sell_signal = (
+    (probs_buy[:, 0] - probs_buy[:, 1] > delta_sell)
+    & (probs_buy[:, 0] - probs_buy[:, 2] > delta_sell)
+    & (probs_buy[:, 0] > min_prob_sell)
+).astype(int)
+
+MIN_RUN = 2
+
+MIN_SELL = 1
+
+buy_signal = filter_short_runs(buy_signal, MIN_RUN)
+
+sell_signal = filter_short_runs(sell_signal, MIN_SELL)
+
+>>> GLOBAL after 168 tickers (584 trades, stake = X/N)
+    Δ.min(avg tick)    : -1.92 %
+    Δ.max(avg tick)    : 3.09 %
+    Δ.moyen tick       : 0.40 %
+    Δ.composé global   : 1343.18 %
+    Capital final      : 1,308.69  (30.87 %)
+    Ratio tickers      : 0.53 (89/79)
+    Ratio trades       : 0.53 (309/275)
+
+
+###########################
+###########################
+
+        delta_buy = 0.1
+
+        min_prob_buy = -100
+
+        delta_sell = 0.1
+
+        min_prob_sell = -100
+
+        buy_signal = (
+            (probs_buy[:, 2] - probs_buy[:, 1] > delta_buy)
+            & (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy)
+            & (probs_buy[:, 2] > min_prob_buy)
+        ).astype(int)
+
+        sell_signal = (
+            (probs_buy[:, 0] - probs_buy[:, 1] > delta_sell)
+            & (probs_buy[:, 0] - probs_buy[:, 2] > delta_sell)
+            & (probs_buy[:, 0] > min_prob_sell)
+        ).astype(int)
+
+        MIN_RUN = 5
+
+        MIN_SELL = 5
+
+        buy_signal = filter_short_runs(buy_signal, MIN_RUN)
+
+        sell_signal = filter_short_runs(sell_signal, MIN_SELL)
+
+>>> GLOBAL after 117 tickers (190 trades, stake = X/N)
+    Δ.min(avg tick)    : 0.11 %
+    Δ.max(avg tick)    : 2.75 %
+    Δ.moyen tick       : 1.42 %
+    Δ.composé global   : 844.01 %
+    Capital final      : 1,250.52  (25.05 %)
+    Ratio tickers      : 0.62 (72/45)
+    Ratio trades       : 0.55 (105/85)
+
+
+#################
+
+################
+
+delta_buy = 0.1
+
+min_prob_buy = -100
+
+delta_sell = 0.1
+
+min_prob_sell = -100
+
+buy_signal = (
+    (probs_buy[:, 2] - probs_buy[:, 1] > delta_buy)
+    & (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy)
+    & (probs_buy[:, 2] > min_prob_buy)
+).astype(int)
+
+sell_signal = (
+    (probs_buy[:, 0] - probs_buy[:, 1] > delta_sell)
+    & (probs_buy[:, 0] - probs_buy[:, 2] > delta_sell)
+    & (probs_buy[:, 0] > min_prob_sell)
+).astype(int)
+
+MIN_RUN = 2
+
+MIN_SELL = 2
+
+>>> GLOBAL after 168 tickers (543 trades, stake = X/N)
+    Δ.min(avg tick)    : -1.96 %
+    Δ.max(avg tick)    : 3.34 %
+    Δ.moyen tick       : 0.56 %
+    Δ.composé global   : 2178.95 %
+    Capital final      : 1,360.92  (36.09 %)
+    Ratio tickers      : 0.57 (95/73)
+    Ratio trades       : 0.54 (292/251)

@@ -54,19 +54,6 @@ class Analysis:
             patch_size=patch_size,
         )
 
-        # self.sell_runner = Runner(
-        #     model_path=sell_model_path,
-        #     num_historical_features=num_historical_features,
-        #     encoder_length=encoder_length,
-        #     hidden_size=hidden_size,
-        #     dropout=dropout,
-        #     lstm_layers=lstm_layers,
-        #     n_heads=n_heads,
-        #     num_attention_layers=num_attention_layers,
-        #     pooling_type=pooling_type,
-        #     patch_size=patch_size,
-        # )
-
     def fill_nan_with_neighbors(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
         """
         Fill NaN values in a tensor by forward and backward filling.
@@ -150,10 +137,6 @@ class Analysis:
 
         probs_buy: np.ndarray = logits_buy.cpu().detach().numpy()
 
-        # logits_sell: torch.Tensor = self.sell_runner.run(data=X)
-
-        # probs_sell: np.ndarray = logits_sell.cpu().detach().numpy()
-
         def _is_buy(p: np.ndarray) -> bool:
             """Conditions BUY pour une ligne de proba (index 0: SELL, 1: HOLD, 2: BUY)."""
 
@@ -173,7 +156,7 @@ class Analysis:
                 arg,
             )
 
-            return arg == 2 and diff2_1 > 10 and diff2_0 > 10 and p[2] > 1 and p[0] < 0
+            return arg == 2 and diff2_1 > 0.1 and diff2_0 > 0.1 and p[2] > -100
 
         def _is_sell(p: np.ndarray) -> bool:
             """Conditions SELL pour une ligne de proba."""
@@ -194,7 +177,7 @@ class Analysis:
                 arg,
             )
 
-            return arg == 0 and diff0_1 > 5 and diff0_2 > 5 and p[0] > 1
+            return arg == 0 and diff0_1 > 0.1 and diff0_2 > 0.1 and p[0] > -100
 
         watch_buy = (
             probs_buy[-size_watch_buy:]
@@ -202,21 +185,15 @@ class Analysis:
             else probs_buy
         )
 
-        # watch_sell = (
-        #     probs_sell[-size_watch_sell:]
-        #     if size_watch_sell <= len(probs_sell)
-        #     else probs_sell
-        # )
+        if all(_is_buy(p) for p in watch_buy):
+            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
+
+            return AnalysisOutput(state=AnalysisState.BUY)
 
         if all(_is_sell(p) for p in watch_buy):
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)
-
-        if all(_is_buy(p) for p in watch_buy):
-            logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : BUY", name, ticker)
-
-            return AnalysisOutput(state=AnalysisState.BUY)
 
         logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : HOLD", name, ticker)
 
