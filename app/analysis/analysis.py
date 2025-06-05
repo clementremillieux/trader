@@ -54,18 +54,18 @@ class Analysis:
             patch_size=patch_size,
         )
 
-        self.sell_runner = Runner(
-            model_path=sell_model_path,
-            num_historical_features=num_historical_features,
-            encoder_length=encoder_length,
-            hidden_size=hidden_size,
-            dropout=dropout,
-            lstm_layers=lstm_layers,
-            n_heads=n_heads,
-            num_attention_layers=num_attention_layers,
-            pooling_type=pooling_type,
-            patch_size=patch_size,
-        )
+        # self.sell_runner = Runner(
+        #     model_path=sell_model_path,
+        #     num_historical_features=num_historical_features,
+        #     encoder_length=encoder_length,
+        #     hidden_size=hidden_size,
+        #     dropout=dropout,
+        #     lstm_layers=lstm_layers,
+        #     n_heads=n_heads,
+        #     num_attention_layers=num_attention_layers,
+        #     pooling_type=pooling_type,
+        #     patch_size=patch_size,
+        # )
 
     def fill_nan_with_neighbors(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
         """
@@ -150,9 +150,9 @@ class Analysis:
 
         probs_buy: np.ndarray = logits_buy.cpu().detach().numpy()
 
-        logits_sell: torch.Tensor = self.sell_runner.run(data=X)
+        # logits_sell: torch.Tensor = self.sell_runner.run(data=X)
 
-        probs_sell: np.ndarray = logits_sell.cpu().detach().numpy()
+        # probs_sell: np.ndarray = logits_sell.cpu().detach().numpy()
 
         def _is_buy(p: np.ndarray) -> bool:
             """Conditions BUY pour une ligne de proba (index 0: SELL, 1: HOLD, 2: BUY)."""
@@ -173,14 +173,14 @@ class Analysis:
                 arg,
             )
 
-            return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
+            return arg == 2 and diff2_1 > 10 and diff2_0 > 10 and p[2] > 1 and p[0] < 0
 
         def _is_sell(p: np.ndarray) -> bool:
             """Conditions SELL pour une ligne de proba."""
 
-            diff2_1 = p[2] - p[1]
+            diff0_1 = p[0] - p[1]
 
-            diff2_0 = p[2] - p[0]
+            diff0_2 = p[0] - p[2]
 
             arg = p.argmax()
 
@@ -189,12 +189,12 @@ class Analysis:
                 name,
                 ticker,
                 p,
-                diff2_1,
-                diff2_0,
+                diff0_1,
+                diff0_2,
                 arg,
             )
 
-            return arg == 2 and diff2_1 > 4 and diff2_0 > 4 and p[2] > 4
+            return arg == 0 and diff0_1 > 5 and diff0_2 > 5 and p[0] > 1
 
         watch_buy = (
             probs_buy[-size_watch_buy:]
@@ -202,13 +202,13 @@ class Analysis:
             else probs_buy
         )
 
-        watch_sell = (
-            probs_sell[-size_watch_sell:]
-            if size_watch_sell <= len(probs_sell)
-            else probs_sell
-        )
+        # watch_sell = (
+        #     probs_sell[-size_watch_sell:]
+        #     if size_watch_sell <= len(probs_sell)
+        #     else probs_sell
+        # )
 
-        if any(_is_sell(p) for p in watch_sell):
+        if all(_is_sell(p) for p in watch_buy):
             logger.info("ANALYZE =>\t- (%s) [%s] ANALYZE RESULT : SELL", name, ticker)
 
             return AnalysisOutput(state=AnalysisState.SELL)

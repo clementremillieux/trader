@@ -373,12 +373,17 @@ class Runner:
             patch_size=patch_size,
         )
 
-        checkpoint = torch.load(
-            model_path, weights_only=False, map_location=torch.device("cpu")
-        )
+        checkpoint = torch.load(model_path, map_location="cpu")
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
 
+        self.model.eval()
+
+        self.device = torch.device("cpu")
+
+        self.model.to(self.device)
+
+    @torch.no_grad()
     def run(self, data: torch.Tensor):
         """
         Run the model on the data.

@@ -123,13 +123,12 @@ class DatasetCreator:
         rsi_period: int,
         nb_windows: int,
         sym_base_asset: Dict[str, str],
+        max_value: int = 400,
     ) -> Optional[SignalDataset]:
         """
         Constructs the dataset by extracting signals from each ticker's stock data,
         applying derivative calculations if specified, and combining the data into a single array.
         """
-
-        max_value = 400
 
         binance_handler = BinanceHandler(main_currency="USDT")
 
@@ -386,7 +385,7 @@ class DatasetCreator:
                 else:
                     last_ts = pd.to_datetime(last_val, unit="ns", utc=True)
 
-                end_15 = last_ts.floor("15T")
+                end_15 = last_ts.floor("15min")
 
                 need_rows = len(window) - 1
 
