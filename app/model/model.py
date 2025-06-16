@@ -1,344 +1,180 @@
-"""DatasetCreator class to create datasets for machine learning."""
-
 import math
-
 import torch
-
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int):
         super().__init__()
-
         pe = torch.zeros(max_len, d_model)
-        # (T, d)
-        position = torch.arange(0, max_len).unsqueeze(1)  # (T,1)
-
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
-        )
-
-        pe[:, 0::2] = torch.sin(position * div_term)
-
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        self.register_buffer("pe", pe.unsqueeze(0))  # (1,T,d)
+        pos = torch.arange(0, max_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe.unsqueeze(0))  # (1, max_len, d_model)
 
     def forward(self, x):
-        """
-        x : (batch, seq_len, d_model)
-        """
-        return x + self.pe[:, : x.size(1)]
+        # x: (B, T, D)
+        return x + self.pe[:, : x.size(1), :]
 
 
 class DilatedTCN(nn.Module):
-    def __init__(self, in_ch, hidden_ch, ks=3, n_layers=4):
+    def __init__(self, in_ch, hidden_ch, kernel_size=3, n_layers=4, dropout=0.1):
         super().__init__()
         layers = []
         for i in range(n_layers):
             dilation = 2**i
-            pad = (ks - 1) // 2 * dilation
+            pad = (kernel_size - 1) // 2 * dilation
             layers += [
                 nn.Conv1d(
                     in_ch if i == 0 else hidden_ch,
                     hidden_ch,
-                    ks,
+                    kernel_size,
                     dilation=dilation,
                     padding=pad,
                 ),
                 nn.ReLU(),
+                nn.Dropout(dropout),
             ]
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x):  # x:(B,T,F)
-        x = x.transpose(1, 2)  # (B,F,T)
-        return self.net(x).transpose(1, 2)  # (B,T,H)
-
-
-class MultiHeadAttention(nn.Module):
-    """
-    Multi-head attention mechanism.
-    """
-
-    def __init__(self, d_model, n_heads, dropout):
-        super(MultiHeadAttention, self).__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
-
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-
-        # Linear projections for query, key, and value for all heads
-        self.query_proj = nn.Linear(d_model, d_model)
-
-        self.key_proj = nn.Linear(d_model, d_model)
-
-        self.value_proj = nn.Linear(d_model, d_model)
-
-        # Final projection to combine attention heads
-        self.out_proj = nn.Linear(d_model, d_model)
-
-        self.dropout = nn.Dropout(dropout)
-
-        self.scale = self.head_dim**0.5  # Scale factor for stability
-
     def forward(self, x):
-        """
-        x: (batch, seq_len, d_model)
-        """
-        batch_size, seq_len, d_model = x.shape
-
-        # Project the queries, keys, and values
-        Q = self.query_proj(x)  # (batch, seq_len, d_model)
-        K = self.key_proj(x)  # (batch, seq_len, d_model)
-        V = self.value_proj(x)  # (batch, seq_len, d_model)
-
-        # Split the dimensions for multi-head attention
-        Q = Q.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        V = V.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-
-        # Compute attention weights
-        attn_weights = (
-            torch.matmul(Q, K.transpose(-1, -2)) / self.scale
-        )  # (batch, n_heads, seq_len, seq_len)
-
-        attn_weights = torch.softmax(attn_weights, dim=-1)
-
-        attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to the values
-        attn_output = torch.matmul(
-            attn_weights, V
-        )  # (batch, n_heads, seq_len, head_dim)
-
-        # Reshape back to (batch, seq_len, d_model)
-        attn_output = (
-            attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
-        )
-
-        # Final linear projection
-        output = self.out_proj(attn_output)  # (batch, seq_len, d_model)
-
-        return output, attn_weights
+        # x: (B, T, D) → (B, D, T) → ... → (B, T, H)
+        y = x.transpose(1, 2)
+        y = self.net(y)
+        return y.transpose(1, 2)
 
 
-class TransformerEncoderBlock(nn.Module):
-    """
-    Transformer encoder block that includes multi-head attention with residual connections,
-    layer normalization, and a feed-forward network.
-    """
-
-    def __init__(self, d_model, n_heads, dropout=0.1, ff_hidden_multiplier=4):
-        super(TransformerEncoderBlock, self).__init__()
-        self.mha = MultiHeadAttention(d_model, n_heads, dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, d_model * ff_hidden_multiplier),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * ff_hidden_multiplier, d_model),
-        )
-
-    def forward(self, x):
-        # Multi-head attention sub-layer with residual connection and layer normalization
-        attn_output, attn_weights = self.mha(x)
-        x = self.norm1(x + self.dropout(attn_output))
-
-        # Feed-forward sub-layer with residual connection and layer normalization
-        ff_output = self.ff(x)
-        x = self.norm2(x + self.dropout(ff_output))
-        return x
-
-
-class TransformerEncoderBlockPreNorm(nn.Module):
-    def __init__(self, d_model, n_heads, p_attn=0.1, p_ff=0.3, ff_mult=4):
+class TransformerBlockPreNorm(nn.Module):
+    def __init__(self, d_model, n_heads, p_attn=0.1, p_ff=0.1, ff_mult=4):
         super().__init__()
-
         self.norm1 = nn.LayerNorm(d_model)
-        self.mha = MultiHeadAttention(d_model, n_heads, dropout=p_attn)
-        self.drop_attn = nn.Dropout(p_attn)
-
+        self.attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=p_attn, batch_first=True
+        )
         self.norm2 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_model * ff_mult),
-            nn.GELU(),  # ← ReLU → GELU
+            nn.GELU(),
             nn.Dropout(p_ff),
             nn.Linear(d_model * ff_mult, d_model),
         )
-        self.drop_ff = nn.Dropout(p_ff)
+        self.drop = nn.Dropout(p_ff)
 
     def forward(self, x):
-        # ─── Pre-Norm Multi-Head Attention ──────────────────────
+        # x: (B, T, D)
         y = self.norm1(x)
-        attn_out, _ = self.mha(y)
-        x = x + self.drop_attn(attn_out)
-
-        # ─── Pre-Norm Feed-Forward ─────────────────────────────
+        attn_out, _ = self.attn(y, y, y)
+        x = x + self.drop(attn_out)
         y = self.norm2(x)
-        ff_out = self.ff(y)
-        x = x + self.drop_ff(ff_out)
+        x = x + self.drop(self.ff(y))
         return x
 
 
 class AttentionPooling(nn.Module):
-    """
-    Learned attention pooling mechanism. Instead of using a simple mean pooling,
-    this module learns to weight different time steps.
-    """
-
     def __init__(self, hidden_size):
-        super(AttentionPooling, self).__init__()
-        # Initialize a learnable attention vector
-        self.attn_vector = nn.Parameter(torch.randn(hidden_size))
-        self.softmax = nn.Softmax(dim=1)
+        super().__init__()
+        self.v = nn.Parameter(torch.randn(hidden_size))
 
     def forward(self, x):
-        """
-        x: (batch, seq_len, hidden_size)
-        Returns a pooled representation: (batch, hidden_size)
-        """
-        # Compute attention scores for each time step
-        scores = torch.matmul(x, self.attn_vector)  # (batch, seq_len)
-        weights = self.softmax(scores).unsqueeze(-1)  # (batch, seq_len, 1)
-        pooled = torch.sum(x * weights, dim=1)  # (batch, hidden_size)
-        return pooled
+        # x: (B, T, H)
+        scores = torch.matmul(x, self.v)
+        weights = torch.softmax(scores, dim=1).unsqueeze(-1)
+        return (x * weights).sum(dim=1)
 
 
-class PatchEmbed(nn.Module):
-    """
-    Découpe la séquence (T, F) en patches contigus de taille `patch_size`
-    puis projette chaque patch en un vecteur `d_model`.
-    - Si T n’est pas multiple de patch_size, on zero-pad la fin.
-    """
-
-    def __init__(self, in_ch: int, patch_size: int = 16, d_model: int = 128):
-        super().__init__()
-        self.ps = patch_size
-        self.proj = nn.Linear(in_ch * patch_size, d_model)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x : (B, T, F)
-        B, T, F = x.shape
-        pad = (-T) % self.ps  # pour avoir un nombre entier de patches
-        if pad:
-            x = torch.cat([x, x.new_zeros(B, pad, F)], dim=1)
-
-        n_patches = x.size(1) // self.ps
-        x = x.view(B, n_patches, self.ps * F)  # (B, n_p, ps·F)
-        return self.proj(x)  # (B, n_p, d_model)
-
-
-class SimpleModel(nn.Module):
+class ImprovedModel(nn.Module):
     def __init__(
         self,
-        num_historical_features: int,
-        encoder_length: int,
-        hidden_size: int = 1024,
-        dropout: float = 0.1,
-        lstm_layers: int = 1,
+        num_features: int = 32,
+        seq_len: int = 512,
+        hidden_size: int = 512,
+        tcn_layers: int = 4,
+        transformer_layers: int = 3,
         n_heads: int = 4,
-        num_attention_layers: int = 3,
-        pooling_type: str = "attn",
-        patch_size: int = 128,
+        patch_size: int = 64,
+        pooling: str = "attn",  # "mean", "last", "attn"
+        dropout: float = 0.1,
     ):
-        """
-        pooling_type:
-          - "mean": simple average over time steps
-          - "last": use the LSTM's final hidden state
-          - "attn": use a learned attention pooling mechanism
-        """
-        super(SimpleModel, self).__init__()
-        self.encoder_length = encoder_length
-        self.hidden_size = hidden_size
-        self.n_heads = n_heads
-        self.num_attention_layers = num_attention_layers
-        self.pooling_type = pooling_type
+        super().__init__()
+        self.pooling = pooling
 
-        self.input_proj = nn.Linear(num_historical_features, hidden_size)
+        # 1) Patch + Positional
+        self.patch_size = patch_size
+        self.n_patches = math.ceil(seq_len / patch_size)
+        self.proj_patch = nn.Linear(num_features * patch_size, hidden_size)
+        self.pos_enc = PositionalEncoding(hidden_size, self.n_patches)
 
-        self.patch_embed = PatchEmbed(
-            num_historical_features, patch_size=patch_size, d_model=hidden_size
-        )
-
-        n_patches = math.ceil(encoder_length / patch_size)
-
-        self.pos_enc = PositionalEncoding(hidden_size, max_len=n_patches)
-
+        # 2) TCN + skip
         self.tcn = DilatedTCN(
-            in_ch=hidden_size, hidden_ch=hidden_size, ks=3, n_layers=4
-        )
-
-        self.encoder_lstm = nn.LSTM(
             hidden_size,
             hidden_size,
-            num_layers=lstm_layers,
-            batch_first=True,
-            dropout=dropout if lstm_layers > 1 else 0.0,
+            kernel_size=3,
+            n_layers=tcn_layers,
+            dropout=dropout,
         )
+        self.skip_proj = nn.Linear(hidden_size, hidden_size)
 
-        # Stack multiple Transformer encoder blocks (attention layers)
-        self.attention_layers = nn.ModuleList(
+        # 3) Blocs Transformer
+        self.transformer = nn.ModuleList(
             [
-                TransformerEncoderBlockPreNorm(
-                    hidden_size, n_heads, p_attn=0.1, p_ff=0.3
+                TransformerBlockPreNorm(
+                    hidden_size, n_heads, p_attn=dropout, p_ff=dropout, ff_mult=4
                 )
-                for _ in range(num_attention_layers)
+                for _ in range(transformer_layers)
             ]
         )
 
-        # self.attention_layers = nn.ModuleList(
-        #     [
-        #         TransformerEncoderBlock(
-        #             d_model=hidden_size, n_heads=n_heads, dropout=dropout
-        #         )
-        #         for _ in range(num_attention_layers)
-        #     ]
-        # )
+        # 4) Pooling
+        if pooling == "attn":
+            self.pool = AttentionPooling(hidden_size)
+        elif pooling == "last":
+            self.pool = lambda x: x[:, -1, :]
+        else:  # mean
+            self.pool = lambda x: x.mean(dim=1)
 
-        self.pool = AttentionPooling(hidden_size)
-
-        # Final classification layer (adjust output size as needed)
-        self.fc_out = nn.Sequential(
+        # 5) Têtes de sortie
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, 3),  # 3 output logits
+            nn.Linear(hidden_size // 2, 3),
         )
 
-        self.ret_head = nn.Linear(hidden_size, 1)  # régression
+        self.regressor = nn.Sequential(nn.Linear(hidden_size, 1), nn.Tanh())
 
-        self.vol_head = nn.Linear(hidden_size, 1)
+        self.regressor_vol = nn.Sequential(nn.Linear(hidden_size, 1), nn.Tanh())
 
-    def forward(self, historical_input):
-        """
-        historical_input: shape (batch, encoder_length, num_historical_features)
-        """
-        # 1) Project input to hidden_size
-        x = self.patch_embed(historical_input)
+    def forward(self, x):
+        # x: (B, T=512, F=32)
+        B, T, F = x.shape
+        # → patches
+        pad = (-T) % self.patch_size
+        if pad:
+            x = torch.cat([x, x.new_zeros(B, pad, F)], dim=1)
 
-        # x = self.input_proj(historical_input)
+        n_patches = x.size(1) // self.patch_size
 
+        x = x.view(B, n_patches, self.patch_size * F)
+        x = self.proj_patch(x)  # (B, n_patches, H)
         x = self.pos_enc(x)
 
-        x = self.tcn(x)
+        # TCN + skip
+        tcn_out = self.tcn(x)  # (B, n_patches, H)
+        x = x + self.skip_proj(tcn_out)
 
-        # 2) LSTM encoding
-        enc_output, (h, c) = self.encoder_lstm(
-            x
-        )  # enc_output: (batch, seq_len, hidden_size)
+        # Transformer
+        for blk in self.transformer:
+            x = blk(x)
 
-        # Apply stacked attention layers
-        for layer in self.attention_layers:
-            enc_output = layer(enc_output)
+        # Pooling
+        rep = self.pool(x)  # (B, H)
 
-            # Learned attention pooling
-        seq_rep = self.pool(enc_output)  # (batch, hidden_size)
-
-        # 4) Final classification (logits)
-        logits = self.fc_out(seq_rep)  # (batch, 3)
+        # Sorties
+        logits = self.classifier(rep)  # (B, 3)
 
         return logits
 
@@ -350,27 +186,15 @@ class Runner:
 
     def __init__(
         self,
-        num_historical_features: int,
-        encoder_length: int,
         model_path: str,
-        hidden_size: int,
-        dropout: float,
-        lstm_layers: int,
-        n_heads: int,
-        num_attention_layers: int,
-        pooling_type: str,
-        patch_size: int,
     ):
-        self.model = SimpleModel(
-            num_historical_features=num_historical_features,
-            encoder_length=encoder_length,
-            hidden_size=hidden_size,
-            dropout=dropout,
-            lstm_layers=lstm_layers,
-            n_heads=n_heads,
-            num_attention_layers=num_attention_layers,
-            pooling_type=pooling_type,
-            patch_size=patch_size,
+        self.model = ImprovedModel(
+            num_features=52,
+            seq_len=1024,
+            hidden_size=1024,
+            dropout=0.5,
+            n_heads=8,
+            transformer_layers=8,
         )
 
         checkpoint = torch.load(model_path, map_location="cpu")

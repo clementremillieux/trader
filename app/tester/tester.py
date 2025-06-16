@@ -18,6 +18,7 @@ import random
 
 from typing import Dict, List, Tuple
 
+
 import numpy as np
 
 from sklearn.preprocessing import MinMaxScaler
@@ -222,19 +223,10 @@ class Tester:
 
     # ----- Hyper-params constant for all tickers ----- #
     window_size = 300
+
     interval = "1h"
-    momentum_period = 5
-    rsi_period = 5
-    model_path = "app/model/model_epoch_crypto_10.pth"
-    sell_model_path = "app/model/model_epoch_crypto_sell_97.pth"
-    num_historical_features = 40
-    hidden_size = 1024
-    dropout = 0.6
-    lstm_layers = 4
-    n_heads = 8
-    num_attention_layers = 8
-    patch_size = window_size // 8
-    pooling_type = "attn"
+
+    model_path = "app/model/model_epoch_crypto_sell_37.pth"
 
     success: int = 0
 
@@ -249,19 +241,10 @@ class Tester:
         self.encoder_length = self.window_size
         self.runner = Runner(
             model_path=self.model_path,
-            num_historical_features=self.num_historical_features,
-            encoder_length=self.encoder_length,
-            hidden_size=self.hidden_size,
-            dropout=self.dropout,
-            lstm_layers=self.lstm_layers,
-            n_heads=self.n_heads,
-            num_attention_layers=self.num_attention_layers,
-            pooling_type=self.pooling_type,
-            patch_size=self.patch_size,
         )
 
         self.dataset_creator = DatasetCreator()
-        self.binance_handler = BinanceHandler(main_currency="USDT")
+        self.binance_handler = BinanceHandler(main_currency="USDC")
         self.symbols_dict: Dict[str, str] = self.binance_handler.get_symbols_dict()
 
     # ----- Core async test ----- #
@@ -277,22 +260,20 @@ class Tester:
             window_size=self.window_size,
             ticker_name=ticker,
             interval=self.interval,
-            momentum_period=self.momentum_period,
-            rsi_period=self.rsi_period,
-            nb_windows=nb_windows,
             sym_base_asset=self.symbols_dict,
             max_value=nb_windows,
         )
+
         if dataset is None:
             logger.warning("ANALYZE => (%s) Dataset is None for %s", name, ticker)
             return None
 
         X = Scaler().scale(dataset.X)
 
-        # 2) Inference
+        logger.info("ANALYZE => (%s) Max X : %s, Min X : %s", name, X.max(), X.min())
+
         probs_buy = self.runner.run(X).cpu().numpy()
 
-        # 3) Prices
         stock = await self.binance_handler.get_historical_data_v2(
             ticker=f"{self.symbols_dict[ticker]}USDC",
             interval=self.interval,
@@ -301,33 +282,22 @@ class Tester:
 
         if stock is None or stock.empty:
             logger.warning("ANALYZE => (%s) Empty prices for %s", name, ticker)
+
             return None
 
         close_prices = stock["Close"].astype(float).values[-probs_buy.shape[0] :]
 
-        delta_buy = 0.1
+        delta_buy = 5
 
-        min_prob_buy = -100
+        delta_sell = 0
 
-        delta_sell = 0.1
+        buy_signal = (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy).astype(int)
 
-        min_prob_sell = -100
+        sell_signal = (probs_buy[:, 0] - probs_buy[:, 2] > delta_sell).astype(int)
 
-        buy_signal = (
-            (probs_buy[:, 2] - probs_buy[:, 1] > delta_buy)
-            & (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy)
-            & (probs_buy[:, 2] > min_prob_buy)
-        ).astype(int)
+        MIN_RUN = 1
 
-        sell_signal = (
-            (probs_buy[:, 0] - probs_buy[:, 1] > delta_sell)
-            & (probs_buy[:, 0] - probs_buy[:, 2] > delta_sell)
-            & (probs_buy[:, 0] > min_prob_sell)
-        ).astype(int)
-
-        MIN_RUN = 2
-
-        MIN_SELL = 2
+        MIN_SELL = 0
 
         buy_signal = filter_short_runs(buy_signal, MIN_RUN)
 
@@ -345,14 +315,29 @@ class Tester:
             self,
         )
 
+        scale_value = np.max(probs_buy)
+
         if variations.size == 0:  # ← couper AVANT min/avg/max
             logger.info("► %s | aucun trade clôturé", ticker)
             logger.info(
                 "=== %s | %s | end ====================================", name, ticker
             )
-            return variations  # <- renvoie quand même l'array vide
-            #    (StatsCollector l'ignorera)
-        # --- ici, on est sûr qu'il y a ≥ 1 trade ---
+
+            self._plot(
+                ticker=ticker,
+                close_scaled=scale_minmax(close_prices, (-1, 1)) * scale_value,
+                buy_signal=buy_signal * scale_value,
+                sell_signal=sell_signal * scale_value,
+                buy_prob=probs_buy[:, 2],
+                hold_prob=probs_buy[:, 1],
+                sell_prob=probs_buy[:, 0],
+                buy_cross=buy_cross,
+                sell_cross=sell_cross,
+                stats=(0, 0, 0, variations.size, 0),
+            )
+
+            return variations
+
         min_v, max_v, avg_v = variations.min(), variations.max(), variations.mean()
 
         comp_v = compound_return(variations)
@@ -376,8 +361,6 @@ class Tester:
             close_prices.min(),
             close_prices.max(),
         )
-
-        scale_value = np.max(probs_buy)
 
         # 6) Plot
         self._plot(
@@ -477,6 +460,7 @@ async def main() -> None:
 
     for t in tickers:
         vars_ = await tester.test(name="Test", ticker=t, nb_windows=NB_HOURS)
+
         if vars_ is not None:
             stats.add(t, vars_)
 

@@ -20,8 +20,6 @@ from pydantic import BaseModel
 
 from app.analysis.analysis import Analysis
 
-from app.tickers.schemas import DatasetSignal
-
 from app.trader.schemas import PortfolioValue, Position
 
 from app.analysis.schemas import AnalysisOutput, AnalysisState
@@ -79,10 +77,6 @@ class Trader:
 
         self.main_currency: str = main_currency
 
-        self.size_watch_buy: int = 2
-
-        self.size_watch_sell: int = 2
-
         self.stop_loss_pct_base: float = 0.05
 
         self.stop_loss_pct_high: float = 0.02
@@ -99,33 +93,12 @@ class Trader:
 
         self.client = BinanceHandler(main_currency=main_currency)
 
-        signals = [
-            DatasetSignal(
-                column_name="Close",
-                is_derivative=True,
-                is_normalize=True,
-                is_financial=True,
-            ),
-            DatasetSignal(
-                column_name="Volume",
-                is_derivative=True,
-                is_normalize=True,
-                is_financial=False,
-            ),
-        ]
+        self.analysis_buy = Analysis(
+            model_path="app/model/model_epoch_crypto_sell_37.pth",
+        )
 
-        self.analysis = Analysis(
-            model_path="app/model/model_epoch_crypto_10.pth",
-            sell_model_path="app/model/model_epoch_crypto_sell_97.pth",
-            signals=signals,
-            num_historical_features=40,
-            encoder_length=self.window_size,
-            hidden_size=1024,
-            dropout=0.6,
-            lstm_layers=4,
-            n_heads=8,
-            num_attention_layers=8,
-            patch_size=int(self.window_size / 8),
+        self.analysis_sell = Analysis(
+            model_path="app/model/model_epoch_crypto_sell_37.pth",
         )
 
         self.persistence_path = Path("./app/trader/high_values.json")
@@ -141,9 +114,9 @@ class Trader:
             len(self.tickers),
         )
 
-        print(self.tickers)
+        print("Tickers :", self.tickers)
 
-        print(self.symbols_dict)
+        print("Symbols dict :", self.symbols_dict)
 
     async def _save_positions(self, positions: PositionsSaved) -> None:
         """Save positions to a temporary file and replace the original."""
@@ -307,17 +280,11 @@ class Trader:
                     continue
 
             try:
-                signal: AnalysisOutput = await self.analysis.analyze(
+                signal: AnalysisOutput = await self.analysis_sell.analyze(
                     ticker=symbol,
                     window_size=self.window_size,
-                    interval=self.interval,
-                    momentum_period=self.momentum_period,
-                    rsi_period=self.rsi_period,
-                    nb_windows=max(self.size_watch_buy, self.size_watch_sell),
                     name="monitor",
                     sym_base_asset=self.symbols_dict,
-                    size_watch_buy=self.size_watch_buy,
-                    size_watch_sell=self.size_watch_sell,
                 )
 
                 if signal.state == AnalysisState.SELL:
@@ -341,7 +308,7 @@ class Trader:
 
                 continue
 
-        # await asyncio.sleep(60)
+        await asyncio.sleep(60)
 
     async def scan_and_trade(self) -> None:
         """
@@ -412,17 +379,11 @@ class Trader:
                 continue
 
             try:
-                signal: AnalysisOutput = await self.analysis.analyze(
+                signal: AnalysisOutput = await self.analysis_buy.analyze(
                     ticker=sym,
                     window_size=self.window_size,
-                    interval=self.interval,
-                    momentum_period=self.momentum_period,
-                    rsi_period=self.rsi_period,
                     name="scan",
                     sym_base_asset=self.symbols_dict,
-                    nb_windows=max(self.size_watch_buy, self.size_watch_sell),
-                    size_watch_buy=self.size_watch_buy,
-                    size_watch_sell=self.size_watch_sell,
                 )
 
             except Exception as e:
