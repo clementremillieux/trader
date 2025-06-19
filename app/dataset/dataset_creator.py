@@ -42,24 +42,33 @@ class DatasetCreator:
 
         BASE_URL = "https://api.binance.com"
 
-        MAX_CONC = 4
+        MAX_CONC = 24
+
+        self._gate = asyncio.Semaphore(12)
 
         self.client = httpx.AsyncClient(
             base_url=BASE_URL,
             timeout=httpx.Timeout(30.0),
-            limits=httpx.Limits(max_connections=MAX_CONC),
+            limits=httpx.Limits(
+                max_connections=MAX_CONC, max_keepalive_connections=MAX_CONC
+            ),
         )
 
-    async def _json(self, path: str, params: Dict[str, Any]) -> Any:
+    async def _json(self, path: str, params: dict[str, Any]) -> Any:
         params = {k: v for k, v in params.items() if v not in (None, "")}
 
         logger.debug("GET %s %s", path, params)
 
-        r = await self.client.get(path, params=params)
+        async with self._gate:
+            r = await self.client.get(path, params=params)
 
         r.raise_for_status()
-
         return r.json()
+
+    async def aclose(self) -> None:
+        """Gracefully close the HTTP client (call once at shutdown)."""
+
+        await self.client.aclose()
 
     async def fetch_ohlc(self, sym: str, intv: str, bar_needed: int) -> pd.DataFrame:
         """Retourne au moins *BARS_NEEDED* bougies pour (sym,intv)."""

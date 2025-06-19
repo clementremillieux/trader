@@ -24,8 +24,6 @@ class Analysis:
         self,
         model_path: str,
     ) -> None:
-        self.dataset_creator = DatasetCreator()
-
         self.runner = Runner(
             model_path=model_path,
         )
@@ -39,10 +37,12 @@ class Analysis:
     ) -> AnalysisOutput:
         """Analyse le ticker et renvoie BUY, SELL ou HOLD."""
 
+        dataset_creator = DatasetCreator()
+
         if not ticker.endswith("USDC"):
             ticker = ticker + "USDC"
 
-        dataset = await self.dataset_creator.create_dataset(
+        dataset = await dataset_creator.create_dataset(
             window_size=window_size,
             ticker_name=ticker,
             sym_base_asset=sym_base_asset,
@@ -58,6 +58,8 @@ class Analysis:
             return AnalysisOutput(state=AnalysisState.HOLD)
 
         X = Scaler().scale(X=dataset.X)
+
+        await dataset_creator.aclose()
 
         logits_buy: torch.Tensor = self.runner.run(data=X)
 

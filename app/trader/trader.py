@@ -94,11 +94,11 @@ class Trader:
         self.client = BinanceHandler(main_currency=main_currency)
 
         self.analysis_buy = Analysis(
-            model_path="app/model/model_epoch_crypto_sell_37.pth",
+            model_path="app/model/model_epoch_crypto_sell_87.pth",
         )
 
         self.analysis_sell = Analysis(
-            model_path="app/model/model_epoch_crypto_sell_37.pth",
+            model_path="app/model/model_epoch_crypto_sell_87.pth",
         )
 
         self.persistence_path = Path("./app/trader/high_values.json")
