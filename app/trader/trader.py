@@ -81,7 +81,7 @@ class Trader:
 
         self.stop_loss_pct_high: float = 0.02
 
-        self.tranche_pct: float = 0.1
+        self.tranche_pct: float = 0.05
 
         self.window_size = 300
 
