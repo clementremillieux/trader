@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import glob
 
+import json
+
 import pickle
+
+from pathlib import Path
 
 from typing import Optional, Dict, Union, Tuple
 
@@ -14,7 +18,11 @@ import torch
 
 from torch.utils.data import Dataset
 
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler  # type: ignore
+
+OUTPUT_DIR = Path("./datasets")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+RANGES_PATH = OUTPUT_DIR / "scaler_ranges.json"
 
 
 def _to_numpy(arr: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
@@ -55,6 +63,25 @@ class CryptoDataset(Dataset):
 
     def __len__(self):
         return len(self.X)
+
+
+def _load_pickle_dataset(path: str | Path) -> CryptoDataset:
+    with open(path, "rb") as fh:
+        payload = pickle.load(fh)
+
+    if isinstance(payload, CryptoDataset):
+        return payload
+
+    if isinstance(payload, dict):
+        required_keys = {"X", "y_cls", "y_vol", "y_reg"}
+        if not required_keys.issubset(payload):
+            missing = required_keys.difference(payload)
+            raise KeyError(f"Clés manquantes dans {path}: {sorted(missing)}")
+        return CryptoDataset(
+            payload["X"], payload["y_cls"], payload["y_vol"], payload["y_reg"]
+        )
+
+    raise TypeError(f"Format de pickle inattendu pour {path}: {type(payload).__name__}")
 
 
 def scale(
@@ -131,36 +158,37 @@ def scale_target(
     assert key in ("ret", "vol"), "key doit être 'ret' ou 'vol'"
     y_np = _to_numpy(y).reshape(-1, 1)  # (N,1)
 
+    ret_ranges: Optional[Dict[str, Tuple[float, float]]] = None
     if is_use_saved_ranges:
-        if target_ranges_forced is not None:
-            target_ranges = target_ranges_forced
-
-        y_min, y_max = target_ranges[key]
+        if target_ranges_forced is None:
+            raise ValueError(
+                "target_ranges_forced must be provided when is_use_saved_ranges=True"
+            )
+        tr = target_ranges_forced
+        y_min, y_max = tr[key]
+        ret_ranges = target_ranges_forced
     else:
         y_min, y_max = float(y_np.min()), float(y_np.max())
         print(
             f"--> nouveau range pour '{key}': ({y_min}, {y_max}) "
             "→ ajoutez-le dans target_ranges"
         )
-
-        target_ranges = {}
-
-        target_ranges[key] = (y_min, y_max)
+        ret_ranges = {key: (y_min, y_max)}
 
     # Min-Max scaling manuel (évite de ré-instancier un MinMaxScaler)
     denom = y_max - y_min if y_max != y_min else 1.0
     y_scaled_np = (y_np - y_min) / denom
     y_scaled_np = np.clip(y_scaled_np, 0.0, 1.0).reshape(-1)  # (N,)
 
-    return _to_same_type(y_scaled_np, y), target_ranges
+    return _to_same_type(y_scaled_np, y), ret_ranges
 
 
 def scale_dataset():
     # 1) On charge et concatène tous les splits train
-    train_files = sorted(glob.glob("./ticker_dataset_train_*.pickle"))
+    train_files = sorted(glob.glob(str(OUTPUT_DIR / "ticker_dataset_train_*.pickle")))
     X_list, cls_list, vol_list, reg_list = [], [], [], []
     for path in train_files:
-        ds: CryptoDataset = pickle.load(open(path, "rb"))
+        ds = _load_pickle_dataset(path)
         X_list.append(ds.X)
         cls_list.append(ds.y_cls)
         vol_list.append(ds.y_vol)
@@ -172,10 +200,10 @@ def scale_dataset():
     print(f"→ Train total shape: {X_train.shape}")
 
     # 2) Même chose pour le val
-    val_files = sorted(glob.glob("./ticker_dataset_val_*.pickle"))
+    val_files = sorted(glob.glob(str(OUTPUT_DIR / "ticker_dataset_val_*.pickle")))
     X_list, cls_list, vol_list, reg_list = [], [], [], []
     for path in val_files:
-        ds: CryptoDataset = pickle.load(open(path, "rb"))
+        ds = _load_pickle_dataset(path)
         X_list.append(ds.X)
         cls_list.append(ds.y_cls)
         vol_list.append(ds.y_vol)
@@ -194,75 +222,87 @@ def scale_dataset():
         X_val.numpy(), y_cls_val.numpy(), y_vol_val.numpy(), y_reg_val.numpy()
     )
 
-    # 4) On calcule/affiche les ranges à sauvegarder
-    _, feature_ranges_X = scale(
-        X=np.concatenate(ticker_dataset_train.X, ticker_dataset_val.X),
+    # 4) Ranges basés uniquement sur le train --------------------
+    scaled_train_X, feature_ranges_X = scale(
+        X=ticker_dataset_train.X,
         is_use_feature_ranges=False,
     )
-    _, feature_ranges_y_ret = scale_target(
-        y=np.concatenate(ticker_dataset_train.y_reg, ticker_dataset_val.y_reg),
-        key="ret",
-        is_use_saved_ranges=False,
-    )
-    _, feature_ranges_y_vol = scale_target(
-        y=np.concatenate(ticker_dataset_train.y_vol, ticker_dataset_val.y_vol),
-        key="vol",
-        is_use_saved_ranges=False,
-    )
-
-    # 5) On applique enfin le scaling “officiel”
-    ticker_dataset_train.X, _ = scale(
-        X=ticker_dataset_train.X,
-        is_use_feature_ranges=True,
-        feature_ranges_forced=feature_ranges_X,
-    )
-    ticker_dataset_val.X, _ = scale(
+    ticker_dataset_train.X = torch.as_tensor(scaled_train_X, dtype=torch.float32)
+    scaled_val_X, _ = scale(
         X=ticker_dataset_val.X,
         is_use_feature_ranges=True,
         feature_ranges_forced=feature_ranges_X,
     )
-    ticker_dataset_train.y_reg, _ = scale_target(
-        ticker_dataset_train.y_reg,
+    ticker_dataset_val.X = torch.as_tensor(scaled_val_X, dtype=torch.float32)
+
+    scaled_train_y_reg, target_ranges_y_ret = scale_target(
+        y=ticker_dataset_train.y_reg,
+        key="ret",
+        is_use_saved_ranges=False,
+    )
+    ticker_dataset_train.y_reg = torch.as_tensor(
+        scaled_train_y_reg, dtype=torch.float32
+    )
+    scaled_val_y_reg, _ = scale_target(
+        y=ticker_dataset_val.y_reg,
         key="ret",
         is_use_saved_ranges=True,
-        target_ranges_forced=feature_ranges_y_ret,
+        target_ranges_forced=target_ranges_y_ret,
     )
-    ticker_dataset_val.y_reg, _ = scale_target(
-        ticker_dataset_val.y_reg,
-        key="ret",
-        is_use_saved_ranges=True,
-        target_ranges_forced=feature_ranges_y_ret,
+    ticker_dataset_val.y_reg = torch.as_tensor(scaled_val_y_reg, dtype=torch.float32)
+
+    scaled_train_y_vol, target_ranges_y_vol = scale_target(
+        y=ticker_dataset_train.y_vol,
+        key="vol",
+        is_use_saved_ranges=False,
     )
-    ticker_dataset_train.y_vol, _ = scale_target(
-        ticker_dataset_train.y_vol,
+    ticker_dataset_train.y_vol = torch.as_tensor(
+        scaled_train_y_vol, dtype=torch.float32
+    )
+    scaled_val_y_vol, _ = scale_target(
+        y=ticker_dataset_val.y_vol,
         key="vol",
         is_use_saved_ranges=True,
-        target_ranges_forced=feature_ranges_y_vol,
+        target_ranges_forced=target_ranges_y_vol,
     )
-    ticker_dataset_val.y_vol, _ = scale_target(
-        ticker_dataset_val.y_vol,
-        key="vol",
-        is_use_saved_ranges=True,
-        target_ranges_forced=feature_ranges_y_vol,
-    )
+    ticker_dataset_val.y_vol = torch.as_tensor(scaled_val_y_vol, dtype=torch.float32)
+
+    if (
+        feature_ranges_X is None
+        or target_ranges_y_ret is None
+        or target_ranges_y_vol is None
+    ):
+        raise RuntimeError("Impossible de calculer les bornes de scaling.")
+
+    feature_ranges_serializable = {
+        str(idx): [float(bounds[0]), float(bounds[1])]
+        for idx, bounds in feature_ranges_X.items()
+    }
+    target_ranges_serializable = {
+        "ret": [float(v) for v in target_ranges_y_ret["ret"]],
+        "vol": [float(v) for v in target_ranges_y_vol["vol"]],
+    }
+    ranges_payload = {
+        "feature_ranges": feature_ranges_serializable,
+        "target_ranges": target_ranges_serializable,
+    }
+    RANGES_PATH.write_text(json.dumps(ranges_payload, indent=2))
 
     # 6) On vérifie
-    print(
-        f"Après scaling  → Train X ∈ [{ticker_dataset_train.X.min():.3f}, {ticker_dataset_train.X.max():.3f}]"
-    )
-    print(
-        f"               Val   X ∈ [{ticker_dataset_val.X.min():.3f}, {ticker_dataset_val.X.max():.3f}]"
-    )
+    train_min, train_max = ticker_dataset_train.X.min(), ticker_dataset_train.X.max()
+    val_min, val_max = ticker_dataset_val.X.min(), ticker_dataset_val.X.max()
+    print(f"Après scaling  → Train X ∈ [{train_min:.3f}, {train_max:.3f}]")
+    print(f"               Val   X ∈ [{val_min:.3f}, {val_max:.3f}]")
 
     # 7) Sauvegarde
-    pickle.dump(
-        ticker_dataset_train, open("./ticker_dataset_train_scaled.pickle", "wb")
-    )
-    pickle.dump(ticker_dataset_val, open("./ticker_dataset_val_scaled.pickle", "wb"))
+    with open(OUTPUT_DIR / "ticker_dataset_train_scaled.pickle", "wb") as f:
+        pickle.dump(ticker_dataset_train, f)
+    with open(OUTPUT_DIR / "ticker_dataset_val_scaled.pickle", "wb") as f:
+        pickle.dump(ticker_dataset_val, f)
 
     # 8) Re-chargement pour sanity check
-    td_tr = pickle.load(open("./ticker_dataset_train_scaled.pickle", "rb"))
-    td_va = pickle.load(open("./ticker_dataset_val_scaled.pickle", "rb"))
+    td_tr = pickle.load(open(OUTPUT_DIR / "ticker_dataset_train_scaled.pickle", "rb"))
+    td_va = pickle.load(open(OUTPUT_DIR / "ticker_dataset_val_scaled.pickle", "rb"))
     print(f"Re-load shapes: train {td_tr.X.shape}, val {td_va.X.shape}")
 
 

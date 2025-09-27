@@ -226,7 +226,7 @@ class Tester:
 
     interval = "1h"
 
-    model_path = "app/model/model_epoch_crypto_sell_37.pth"
+    model_path = "app/model/model_epoch_crypto_sell_87.pth"
 
     success: int = 0
 
@@ -272,7 +272,9 @@ class Tester:
 
         logger.info("ANALYZE => (%s) Max X : %s, Min X : %s", name, X.max(), X.min())
 
-        probs_buy = self.runner.run(X).cpu().numpy()
+        logits = self.runner.run(X)
+
+        probs_buy = logits.softmax(dim=1).cpu().numpy()
 
         stock = await self.binance_handler.get_historical_data_v2(
             ticker=f"{self.symbols_dict[ticker]}USDC",
@@ -287,9 +289,9 @@ class Tester:
 
         close_prices = stock["Close"].astype(float).values[-probs_buy.shape[0] :]
 
-        delta_buy = 5
+        delta_buy = 0.20
 
-        delta_sell = 0
+        delta_sell = 0.20
 
         buy_signal = (probs_buy[:, 2] - probs_buy[:, 0] > delta_buy).astype(int)
 
@@ -442,7 +444,7 @@ class Tester:
 async def main() -> None:
     INITIAL_CAPITAL = 1_000
 
-    N_SLICES = 10
+    N_SLICES = 20
 
     NB_HOURS = int(24 * 30.5)
 
@@ -456,7 +458,7 @@ async def main() -> None:
 
     k = len(tickers)
 
-    tickers = random.sample(tickers, k=k)  # pour limiter le nombre de tickers
+    tickers = random.sample(tickers, k=50)  # pour limiter le nombre de tickers
 
     for t in tickers:
         vars_ = await tester.test(name="Test", ticker=t, nb_windows=NB_HOURS)

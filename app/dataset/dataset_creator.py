@@ -473,6 +473,8 @@ class DatasetCreator:
         df_sol: pd.DataFrame,
         df_xrp: pd.DataFrame,
     ) -> pd.DataFrame:
+        """Prépare le DataFrame pour l'entraînement."""
+
         df_ticker = df_ticker.copy()
 
         df_ticker["atr"] = self._atr(
@@ -480,10 +482,13 @@ class DatasetCreator:
         )
 
         cleans = []
+
         for other in (df_btc, df_usdt, df_eth, df_sol, df_xrp):
             # déduplication stricte de l’index
             other_clean = other[~other.index.duplicated(keep="first")]
+
             cleans.append(other_clean)
+
         df_btc, df_usdt, df_eth, df_sol, df_xrp = cleans
 
         # 2) On réaligne par forward-fill
