@@ -57,8 +57,8 @@ def setup_logging(verbose: bool) -> None:
     )
 
 
-def list_dataset_files(prefix: str, max_files: int | None) -> List[Path]:
-    files = sorted(Path("datasets").glob(f"{prefix}*.pickle"))
+def list_dataset_files(path: str, prefix: str, max_files: int | None) -> List[Path]:
+    files = sorted(Path(path).glob(f"{prefix}*.pickle"))
     if max_files is not None:
         files = files[:max_files]
     if not files:
