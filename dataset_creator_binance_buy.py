@@ -1269,7 +1269,9 @@ def triple_barrier(
         dn_level = c0 - dn_thr[t0]
 
         future = close[t0 + 1 : t0 + max_h + 1]
-        future_rel = (future - c0) / c0 if future.size else np.empty(0, dtype=np.float32)
+        future_rel = (
+            (future - c0) / c0 if future.size else np.empty(0, dtype=np.float32)
+        )
 
         hits_up = np.flatnonzero(future >= up_level)
         hits_dn = np.flatnonzero(future <= dn_level)

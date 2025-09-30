@@ -264,9 +264,7 @@ def _stream_upload_directory(
             while True:
                 uploaded_this_round = _upload_ready_files(force=True)
                 remaining = [
-                    p
-                    for p in _collect_files()
-                    if p not in uploaded and p.exists()
+                    p for p in _collect_files() if p not in uploaded and p.exists()
                 ]
                 if not remaining:
                     break
