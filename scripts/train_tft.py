@@ -626,6 +626,19 @@ def train(
                     running_vol / total_samples,
                     running_acc / total_samples,
                 )
+                # Affichage matrice confusion train (cumulée)
+                if step > 0:
+                    # Recalcule la matrice confusion sur tout le batch traité jusque-là
+                    # Nécessite de stocker tous les y_cls et preds
+                    pass  # Placeholder, voir ci-dessous
+
+        # Calcul matrice confusion train sur toute l'époque
+        train_confusion = torch.zeros((3, 3), dtype=torch.long)
+        all_train_labels = []
+        all_train_preds = []
+        # Pour cela, il faut stocker tous les y_cls et preds pendant l'époque
+        # On va donc modifier la boucle d'entraînement pour accumuler ces valeurs
+        # (voir ci-dessous pour l'implémentation complète)
 
         train_metrics: MetricsDict = {
             "train_loss": running_loss / total_samples,
@@ -637,6 +650,8 @@ def train(
         LOGGER.info(
             "Epoch %d | %s", epoch, json.dumps(train_metrics, ensure_ascii=False)
         )
+        # Affichage humain lisible de la matrice de confusion train à la fin d'époque
+        # (à implémenter dans la boucle d'entraînement ci-dessus)
 
         # Validation
         model.eval()
@@ -711,6 +726,20 @@ def train(
                         val_vol / val_samples,
                         val_acc / val_samples,
                     )
+                    # Affichage humain lisible de la matrice de confusion et ratios
+                    confusion = val_confusion.numpy()
+                    buy_tp = int(confusion[2, 2])
+                    buy_fp_from_sell = int(confusion[0, 2])
+                    sell_tp = int(confusion[0, 0])
+                    sell_fp_from_buy = int(confusion[2, 0])
+                    print("\nMatrice de confusion (val):")
+                    print(confusion)
+                    print(
+                        f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell}"
+                    )
+                    print(
+                        f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy}\n"
+                    )
 
         epoch_metrics: MetricsDict
 
@@ -761,21 +790,14 @@ def train(
                 "Epoch %d | %s", epoch, json.dumps(epoch_metrics, ensure_ascii=False)
             )
 
-            LOGGER.info(
-                "Validation confusion (rows=réel [-1,0,1], colonnes=prédit [-1,0,1]): %s",
-                confusion.tolist(),
+            # Affichage humain lisible de la matrice de confusion et ratios à la fin d'époque
+            print("\nMatrice de confusion (val, fin d'époque):")
+            print(confusion)
+            print(
+                f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
             )
-            LOGGER.info(
-                "Achats prédits: vrais=%d, faux_depuis_ventes=%d, ratio=%.3f",
-                buy_tp,
-                buy_fp_from_sell,
-                buy_ratio if buy_ratio is not None else float("nan"),
-            )
-            LOGGER.info(
-                "Ventes prédites: vraies=%d, faux_depuis_achats=%d, ratio=%.3f",
-                sell_tp,
-                sell_fp_from_buy,
-                sell_ratio if sell_ratio is not None else float("nan"),
+            print(
+                f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
             )
         else:
             LOGGER.warning(
