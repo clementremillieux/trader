@@ -546,6 +546,8 @@ def train(
         running_vol = 0.0
         running_acc = 0.0
         total_samples = 0
+        all_train_labels = []
+        all_train_preds = []
 
         total_train_batches = _safe_len(train_loader)
         progress = tqdm(
@@ -609,9 +611,6 @@ def train(
                 running_acc += (preds == y_cls).sum().item()
                 total_samples += batch_size
                 # Accumule pour matrice confusion train
-                if "all_train_labels" not in locals():
-                    all_train_labels = []
-                    all_train_preds = []
                 all_train_labels.extend(y_cls.cpu().numpy().tolist())
                 all_train_preds.extend(preds.cpu().numpy().tolist())
 
