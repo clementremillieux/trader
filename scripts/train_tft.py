@@ -38,10 +38,8 @@ except AttributeError:  # pragma: no cover - fallback for older PyTorch
 
 
 def amp_autocast(device_type: str, enabled: bool):
-    if AMP_HAS_DEVICE_TYPE:
-        return AUTOCast(device_type=device_type, enabled=enabled)  # type: ignore[call-arg]
-    else:
-        return AUTOCast(enabled=enabled)  # type: ignore[call-arg]
+    # Toujours passer device_type, car certaines versions de torch.amp.autocast l'exigent
+    return AUTOCast(device_type=device_type, enabled=enabled)  # type: ignore[call-arg]
 
 
 def create_grad_scaler(enabled: bool):
