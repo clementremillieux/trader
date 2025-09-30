@@ -40,14 +40,15 @@ except AttributeError:  # pragma: no cover - fallback for older PyTorch
 def amp_autocast(device_type: str, enabled: bool):
     if AMP_HAS_DEVICE_TYPE:
         return AUTOCast(device_type=device_type, enabled=enabled)  # type: ignore[call-arg]
-    return AUTOCast(enabled=enabled)  # type: ignore[call-arg]
+    else:
+        return AUTOCast(enabled=enabled)  # type: ignore[call-arg]
 
 
 def create_grad_scaler(enabled: bool):
     if enabled:
-        try:
+        if AMP_HAS_DEVICE_TYPE:
             return GradScalerCls(device_type="cuda", enabled=enabled)  # type: ignore[call-arg]
-        except TypeError:
+        else:
             return GradScalerCls(enabled=enabled)
     return None
 
