@@ -614,10 +614,39 @@ def train(
                 all_train_labels.extend(y_cls.cpu().numpy().tolist())
                 all_train_preds.extend(preds.cpu().numpy().tolist())
 
-            progress.set_postfix(
-                loss=running_loss / total_samples,
-                acc=running_acc / total_samples,
-            )
+            # Calcul matrice confusion partielle pour affichage dans la barre de progression
+            if len(all_train_labels) > 0:
+                import numpy as np
+
+                train_confusion = np.zeros((3, 3), dtype=int)
+                for t, p in zip(all_train_labels, all_train_preds):
+                    train_confusion[t, p] += 1
+                buy_tp = int(train_confusion[2, 2])
+                buy_fp_from_sell = int(train_confusion[0, 2])
+                sell_tp = int(train_confusion[0, 0])
+                sell_fp_from_buy = int(train_confusion[2, 0])
+
+                def ratio(tp, fp):
+                    denom = tp + fp
+                    return float(tp / denom) if denom > 0 else None
+
+                buy_ratio = ratio(buy_tp, buy_fp_from_sell)
+                sell_ratio = ratio(sell_tp, sell_fp_from_buy)
+                progress.set_postfix(
+                    loss=running_loss / total_samples,
+                    acc=running_acc / total_samples,
+                    buy_tp=buy_tp,
+                    buy_fp=buy_fp_from_sell,
+                    buy_r=f"{buy_ratio:.2f}" if buy_ratio is not None else "nan",
+                    sell_tp=sell_tp,
+                    sell_fp=sell_fp_from_buy,
+                    sell_r=f"{sell_ratio:.2f}" if sell_ratio is not None else "nan",
+                )
+            else:
+                progress.set_postfix(
+                    loss=running_loss / total_samples,
+                    acc=running_acc / total_samples,
+                )
 
             if log_interval > 0 and step % log_interval == 0:
                 LOGGER.info(
