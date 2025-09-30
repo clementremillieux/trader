@@ -38,9 +38,12 @@ def amp_autocast(device_type: str, enabled: bool):
 
 
 def create_grad_scaler(enabled: bool):
-    if AMP_HAS_DEVICE_TYPE:
-        return GradScalerCls(device_type="cuda", enabled=enabled)  # type: ignore[call-arg]
-    return GradScalerCls(enabled=enabled)
+    if enabled:
+        try:
+            return GradScalerCls(device_type="cuda", enabled=enabled)  # type: ignore[call-arg]
+        except TypeError:
+            return GradScalerCls(enabled=enabled)
+    return None
 
 
 ROOT = Path(__file__).resolve().parents[1]
