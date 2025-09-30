@@ -608,6 +608,12 @@ def train(
                 preds = logits.argmax(dim=1)
                 running_acc += (preds == y_cls).sum().item()
                 total_samples += batch_size
+                # Accumule pour matrice confusion train
+                if "all_train_labels" not in locals():
+                    all_train_labels = []
+                    all_train_preds = []
+                all_train_labels.extend(y_cls.cpu().numpy().tolist())
+                all_train_preds.extend(preds.cpu().numpy().tolist())
 
             progress.set_postfix(
                 loss=running_loss / total_samples,
@@ -627,18 +633,58 @@ def train(
                     running_acc / total_samples,
                 )
                 # Affichage matrice confusion train (cumulée)
-                if step > 0:
-                    # Recalcule la matrice confusion sur tout le batch traité jusque-là
-                    # Nécessite de stocker tous les y_cls et preds
-                    pass  # Placeholder, voir ci-dessous
+                if step > 0 and len(all_train_labels) > 0:
+                    import numpy as np
+
+                    train_confusion = np.zeros((3, 3), dtype=int)
+                    for t, p in zip(all_train_labels, all_train_preds):
+                        train_confusion[t, p] += 1
+                    buy_tp = int(train_confusion[2, 2])
+                    buy_fp_from_sell = int(train_confusion[0, 2])
+                    sell_tp = int(train_confusion[0, 0])
+                    sell_fp_from_buy = int(train_confusion[2, 0])
+
+                    def ratio(tp, fp):
+                        denom = tp + fp
+                        return float(tp / denom) if denom > 0 else None
+
+                    buy_ratio = ratio(buy_tp, buy_fp_from_sell)
+                    sell_ratio = ratio(sell_tp, sell_fp_from_buy)
+                    print("\nMatrice de confusion (train, partiel):")
+                    print(train_confusion)
+                    print(
+                        f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
+                    )
+                    print(
+                        f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
+                    )
 
         # Calcul matrice confusion train sur toute l'époque
-        train_confusion = torch.zeros((3, 3), dtype=torch.long)
-        all_train_labels = []
-        all_train_preds = []
-        # Pour cela, il faut stocker tous les y_cls et preds pendant l'époque
-        # On va donc modifier la boucle d'entraînement pour accumuler ces valeurs
-        # (voir ci-dessous pour l'implémentation complète)
+        if len(all_train_labels) > 0:
+            import numpy as np
+
+            train_confusion = np.zeros((3, 3), dtype=int)
+            for t, p in zip(all_train_labels, all_train_preds):
+                train_confusion[t, p] += 1
+            buy_tp = int(train_confusion[2, 2])
+            buy_fp_from_sell = int(train_confusion[0, 2])
+            sell_tp = int(train_confusion[0, 0])
+            sell_fp_from_buy = int(train_confusion[2, 0])
+
+            def ratio(tp, fp):
+                denom = tp + fp
+                return float(tp / denom) if denom > 0 else None
+
+            buy_ratio = ratio(buy_tp, buy_fp_from_sell)
+            sell_ratio = ratio(sell_tp, sell_fp_from_buy)
+            print("\nMatrice de confusion (train, fin d'époque):")
+            print(train_confusion)
+            print(
+                f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
+            )
+            print(
+                f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
+            )
 
         train_metrics: MetricsDict = {
             "train_loss": running_loss / total_samples,
