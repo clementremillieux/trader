@@ -3,3 +3,36 @@ launchctl load   ~/Library/LaunchAgents/com.remillieux.traderauto.plist
 
 clement@4.251.105.150
 cubhox-5coSno-gazpyj
+
+poetry run python scripts/test_drive_upload.py \
+	--drive-service-account neuralnexus-d506be7b77fb.json \
+	--subfolder datasets \
+	--content Hello \
+	--filename test_drive.txt
+
+poetry run python scripts/test_drive_upload.py \
+	--oauth-client-secrets client_secret.json \
+	--oauth-token-path drive_token.json \
+	--subfolder datasets \
+	--content Hello \
+	--filename test_drive_oauth.txt
+
+poetry run python scripts/create_full_dataset.py \
+	--skip-sweep \
+	--sweep-summary datasets/reports/sweep_summary_20250927T213120.json \
+	--full-resume \
+	--full-out-prefix full_dataset_focus \
+	--full-min-train-windows 120 \
+	--full-min-val-windows 80 \
+	--full-max-batches 999 \
+	--drive-folder-id 1N9Y1uHdewX3mOfB_-SY05oDkqiqTPOYz \
+	--drive-oauth-client-secrets client_secret.json \
+	--drive-oauth-token-path drive_token.json \
+	--drive-subfolder-name full_dataset_focus \
+	--drive-remove-local \
+	--extra-dataset-args \
+	  --bin-label-thr-atr 1.0 \
+	  --min-volume-quantile 0.02 \
+	  --volume-filter-hours 24
+
+Avec `--drive-remove-local`, chaque fichier généré est envoyé sur Drive dès qu'il est prêt puis effacé du disque local.

@@ -20,7 +20,7 @@ import pickle
 
 import random
 
-from typing import Optional, List, Dict, Any, Coroutine, Tuple
+from typing import Optional, List, Dict, Any, Coroutine, Tuple, cast
 
 import json
 
@@ -64,6 +64,8 @@ FEATURE_COLUMNS: list[str] = [
     "log_ret_4h",
     "log_ret_24h",
     "volatility_24h",
+    "volatility_6h",
+    "volatility_1h",
     "atr",
     "price_range",
     "momentum",
@@ -111,6 +113,12 @@ FEATURE_COLUMNS: list[str] = [
     # moyennes roulantes des indicateurs de flux
     "tbqr_ma_24h",
     "buy_press_ma_24h",
+    # nouvelles features multi-échelles
+    "rv_6h",
+    "rv_1h",
+    "ofi_1h",
+    "ofi_6h",
+    "volume_zscore_24h",
 ]
 
 
@@ -269,6 +277,9 @@ class DatasetBuildConfig:
     # Limitation de la taille des datasets (cap sur le nombre de fenêtres)
     max_train_samples: Optional[int] = None
     max_val_samples: Optional[int] = None
+    min_volume_quantile: Optional[float] = 0.05
+    volume_filter_hours: int = 12
+    direction_margin: float = 0.0025
 
     @classmethod
     def from_cli(cls, argv: Optional[List[str]] = None) -> "DatasetBuildConfig":
@@ -438,6 +449,31 @@ class DatasetBuildConfig:
             default=None,
             help="Nombre max de fenêtres à conserver pour le split val (cap).",
         )
+        parser.add_argument(
+            "--min-volume-quantile",
+            type=float,
+            default=0.05,
+            help=(
+                "Quantile minimum de volume (0-1). Les fenêtres en dessous sont filtrées."
+                " Valeur négative pour désactiver."
+            ),
+        )
+        parser.add_argument(
+            "--volume-filter-hours",
+            type=int,
+            default=12,
+            help="Fenêtre en heures pour estimer le quantile de volume.",
+        )
+        parser.add_argument(
+            "--direction-margin",
+            type=float,
+            default=0.0025,
+            help=(
+                "Marge minimale (rendement relatif) pour départager les mouvements "
+                "haussiers et baissiers quand les deux barrières sont touchées. "
+                "Augmentez pour filtrer les signaux ambigus."
+            ),
+        )
 
         args = parser.parse_args(argv)
 
@@ -470,6 +506,13 @@ class DatasetBuildConfig:
             time_aware_periods=args.time_aware_periods,
             max_train_samples=args.max_train_samples,
             max_val_samples=args.max_val_samples,
+            min_volume_quantile=(
+                None
+                if args.min_volume_quantile is None or args.min_volume_quantile < 0
+                else args.min_volume_quantile
+            ),
+            volume_filter_hours=args.volume_filter_hours,
+            direction_margin=args.direction_margin,
         )
 
     def dataset_path(self, split: str, batch_index: int) -> Path:
@@ -1180,6 +1223,7 @@ def triple_barrier(
     p_dn: float = 3.0,  # multiplicateur du seuil baissier (en ATR ou en %)
     max_h: int = 24,  # horizon maximum (en barres) pour évaluer le trade
     use_atr: bool = True,  # seuils adaptatifs avec l'ATR si True
+    direction_margin: float = 0.0,  # marge pour départager les hits combinés
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Applique la règle « triple barrière » pour labelliser chaque barre.
@@ -1216,6 +1260,7 @@ def triple_barrier(
     t_hit = np.full(valid_n, max_h, dtype=np.int16)
 
     sentinel = max_h + 1  # valeur qui signifie « pas de hit »
+    margin = max(0.0, float(direction_margin))
 
     # ──────────────────────── boucle principale ────────────────────────────
     for t0 in range(valid_n):
@@ -1224,11 +1269,47 @@ def triple_barrier(
         dn_level = c0 - dn_thr[t0]
 
         future = close[t0 + 1 : t0 + max_h + 1]
+        future_rel = (future - c0) / c0 if future.size else np.empty(0, dtype=np.float32)
+
         hits_up = np.flatnonzero(future >= up_level)
         hits_dn = np.flatnonzero(future <= dn_level)
 
         hit_up = hits_up[0] + 1 if hits_up.size else sentinel
         hit_dn = hits_dn[0] + 1 if hits_dn.size else sentinel
+
+        if future_rel.size:
+            max_up_val = float(np.max(future_rel))
+            max_up_idx = int(np.argmax(future_rel)) + 1
+            max_dn_val = float(np.min(future_rel))
+            max_dn_idx = int(np.argmin(future_rel)) + 1
+        else:
+            max_up_val = float("-inf")
+            max_dn_val = float("inf")
+            max_up_idx = sentinel
+            max_dn_idx = sentinel
+
+        up_pct_thr = up_thr[t0] / c0
+        dn_pct_thr = dn_thr[t0] / c0
+        meets_up_ext = max_up_val >= up_pct_thr
+        meets_dn_ext = -max_dn_val >= dn_pct_thr
+
+        prefer_up = meets_up_ext and (
+            not meets_dn_ext or (max_up_val - abs(max_dn_val) >= margin)
+        )
+        prefer_dn = meets_dn_ext and (
+            not meets_up_ext or (abs(max_dn_val) - max_up_val >= margin)
+        )
+
+        if prefer_up:
+            y_cls[t0] = 1
+            y_reg[t0] = max_up_val
+            t_hit[t0] = max(1, min(max_up_idx, max_h))
+            continue
+        if prefer_dn:
+            y_cls[t0] = -1
+            y_reg[t0] = max_dn_val
+            t_hit[t0] = max(1, min(max_dn_idx, max_h))
+            continue
 
         if hit_up < hit_dn:
             y_cls[t0] = 1
@@ -1267,6 +1348,9 @@ def prepare_df(  # mêmes arguments qu'avant
     bin_h: int = 24,
     bin_thr_atr: float = 1.0,
     produce_binary: bool = True,
+    min_volume_quantile: Optional[float] = None,
+    volume_filter_hours: int = 12,
+    direction_margin: float = 0.0025,
 ) -> pd.DataFrame:
     # Helper pour convertir des heures en nombre de barres selon l'intervalle
     def bars_for_hours(hours: int) -> int:
@@ -1298,9 +1382,10 @@ def prepare_df(  # mêmes arguments qu'avant
         bars = int(round((hours * 60) / minutes))
         return max(1, bars)
 
-    # Périodes équivalentes 1h/4h/24h exprimées en barres
+    # Périodes équivalentes 1h/4h/6h/24h exprimées en barres
     p1h = bars_for_hours(1)
     p4h = bars_for_hours(4)
+    p6h = bars_for_hours(6)
     p24h = bars_for_hours(24)
     # 0) nettoyage index ----------------------------------------------------
     df_ticker = df_ticker[~df_ticker.index.duplicated(keep="first")].sort_index()
@@ -1322,7 +1407,12 @@ def prepare_df(  # mêmes arguments qu'avant
 
     # 2) triple-barrier -----------------------------------------------------
     y_cls, y_reg, tau = triple_barrier(
-        df_ticker, p_up=2.0, p_dn=2.0, max_h=max_h, use_atr=True
+        df_ticker,
+        p_up=bin_thr_atr,
+        p_dn=bin_thr_atr,
+        max_h=max_h,
+        use_atr=True,
+        direction_margin=direction_margin,
     )
     df_ticker = df_ticker.iloc[:-max_h].copy()  # retrait horizon futur
     df_ticker["y_cls"], df_ticker["y_reg"], df_ticker["tau"] = y_cls, y_reg, tau
@@ -1377,6 +1467,27 @@ def prepare_df(  # mêmes arguments qu'avant
     log_diff_1h = log_close.diff()
     df_ticker["volatility_24h"] = (
         log_diff_1h.rolling(p24h).std().shift(1).fillna(0).astype(np.float32)
+    )
+    df_ticker["volatility_6h"] = (
+        log_diff_1h.rolling(max(p6h, 2))
+        .std(ddof=0)
+        .shift(1)
+        .fillna(0)
+        .astype(np.float32)
+    )
+    df_ticker["volatility_1h"] = (
+        log_diff_1h.rolling(max(p1h, 2))
+        .std(ddof=0)
+        .shift(1)
+        .fillna(0)
+        .astype(np.float32)
+    )
+    ret_sq = log_diff_1h.pow(2)
+    df_ticker["rv_6h"] = (
+        ret_sq.rolling(max(p6h, 2)).sum().shift(1).fillna(0).astype(np.float32)
+    )
+    df_ticker["rv_1h"] = (
+        ret_sq.rolling(max(p1h, 1)).sum().shift(1).fillna(0).astype(np.float32)
     )
     df_ticker["price_range"] = (
         ((df_ticker["high"] - df_ticker["low"]) / (df_ticker["close"] + 1e-9))
@@ -1587,6 +1698,26 @@ def prepare_df(  # mêmes arguments qu'avant
         inplace=True,
         errors="ignore",
     )
+
+    taker_buy_base = (
+        df_ticker["taker_buy_base"]
+        if "taker_buy_base" in df_ticker.columns
+        else pd.Series(0.0, index=df_ticker.index)
+    )
+    volume_series = df_ticker["volume"].astype(np.float32)
+    raw_ofi = (2 * taker_buy_base - volume_series) / (volume_series + 1e-9)
+    df_ticker["ofi_1h"] = raw_ofi.shift(1).fillna(0).astype(np.float32)
+    df_ticker["ofi_6h"] = (
+        raw_ofi.rolling(max(p6h, 2)).mean().shift(1).fillna(0).astype(np.float32)
+    )
+    vol_mean_24h = volume_series.rolling(p24h).mean()
+    vol_std_24h = volume_series.rolling(p24h).std(ddof=0)
+    df_ticker["volume_zscore_24h"] = (
+        ((volume_series - vol_mean_24h) / (vol_std_24h + 1e-9))
+        .shift(1)
+        .fillna(0)
+        .astype(np.float32)
+    )
     # Petit ffill sur quelques colonnes de contexte pour éviter NaN initiaux
     for col in [
         "btc_log_ret_1h",
@@ -1684,6 +1815,24 @@ def prepare_df(  # mêmes arguments qu'avant
     missing_cols = [col for col in required_cols if col not in df_ticker.columns]
     if missing_cols:
         raise KeyError(f"Colonnes de features manquantes: {missing_cols}")
+
+    # Filtre volume faible
+    if (
+        min_volume_quantile is not None
+        and 0 < min_volume_quantile < 1
+        and "volume" in df_ticker.columns
+    ):
+        filter_window = max(1, bars_for_hours(volume_filter_hours))
+        rolling_quantile = (
+            df_ticker["volume"]
+            .rolling(filter_window, min_periods=max(1, filter_window // 2))
+            .quantile(min_volume_quantile)
+            .shift(1)
+        )
+        fallback = df_ticker["volume"].quantile(min_volume_quantile)
+        rolling_quantile = rolling_quantile.fillna(fallback)
+        mask = df_ticker["volume"] >= rolling_quantile
+        df_ticker = df_ticker[mask]
 
     # Sélection des colonnes requises
     df_ticker = df_ticker.loc[:, required_cols]
@@ -1840,6 +1989,9 @@ async def create_ticker_dataset(
     bin_thr_atr: float,
     produce_binary: bool,
     time_aware_periods: bool,
+    min_volume_quantile: Optional[float],
+    volume_filter_hours: int,
+    direction_margin: float,
 ) -> Optional[Tuple[CryptoDataset, CryptoDataset]]:
     try:
         tasks = [
@@ -1892,6 +2044,9 @@ async def create_ticker_dataset(
             bin_h=bin_h,
             bin_thr_atr=bin_thr_atr,
             produce_binary=produce_binary,
+            min_volume_quantile=min_volume_quantile,
+            volume_filter_hours=volume_filter_hours,
+            direction_margin=direction_margin,
         )
 
         logger.info("Ticker %s après préparation : %d lignes", ticker_name, len(df))
@@ -2037,6 +2192,9 @@ async def create_dataset(
                 bin_thr_atr=config.bin_label_thr_atr,
                 produce_binary=config.produce_binary_cls,
                 time_aware_periods=config.time_aware_periods,
+                min_volume_quantile=config.min_volume_quantile,
+                volume_filter_hours=config.volume_filter_hours,
+                direction_margin=config.direction_margin,
             )
         )
 
@@ -2074,8 +2232,7 @@ async def create_dataset(
                 if getattr(full_train_dataset, "y_bin", None) is None:
                     full_train_dataset.y_bin = t_yb  # type: ignore[assignment]
                 else:
-                    fb = full_train_dataset.y_bin  # Optional[Tensor]
-                    assert isinstance(fb, torch.Tensor)
+                    fb = cast(torch.Tensor, full_train_dataset.y_bin)
                     full_train_dataset.y_bin = torch.cat(  # type: ignore[assignment]
                         (fb, t_yb), dim=0
                     )
@@ -2101,8 +2258,7 @@ async def create_dataset(
                 if getattr(full_val_dataset, "y_bin", None) is None:
                     full_val_dataset.y_bin = v_yb  # type: ignore[assignment]
                 else:
-                    fb = full_val_dataset.y_bin
-                    assert isinstance(fb, torch.Tensor)
+                    fb = cast(torch.Tensor, full_val_dataset.y_bin)
                     full_val_dataset.y_bin = torch.cat(  # type: ignore[assignment]
                         (fb, v_yb), dim=0
                     )

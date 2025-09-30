@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
+import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = REPO_ROOT / "datasets" / "reports"
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
 def _ensure_reports_dir() -> Path:
@@ -23,6 +27,283 @@ def _parse_csv(value: str | List[str], cast) -> List[Any]:
         return [cast(v) for v in value]
     items = [x.strip() for x in str(value).split(",") if x.strip()]
     return [cast(x) for x in items]
+
+
+def _build_drive_service(
+    service_account_path: Optional[Path],
+    oauth_client_secrets: Optional[Path],
+    oauth_token_path: Optional[Path],
+):
+    try:
+        from google.oauth2 import service_account
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+    except ImportError as exc:  # pragma: no cover - dépendance optionnelle
+        raise RuntimeError(
+            "google-api-python-client n'est pas installé. Exécutez `poetry install` "
+            "après avoir ajouté la dépendance ou retirez l'option Drive."
+        ) from exc
+
+    credentials = None
+    if service_account_path is not None:
+        credentials = service_account.Credentials.from_service_account_file(
+            str(service_account_path), scopes=DRIVE_SCOPES
+        )
+    elif oauth_client_secrets is not None:
+        token_path = oauth_token_path or (REPO_ROOT / "drive_token.json")
+        creds = None
+        if token_path.exists():
+            try:
+                creds = Credentials.from_authorized_user_file(
+                    str(token_path), scopes=DRIVE_SCOPES
+                )
+            except Exception:
+                creds = None
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        if creds is None or not creds.valid:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(oauth_client_secrets), scopes=DRIVE_SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json())
+        credentials = creds
+    else:  # tentative avec les identifiants par défaut (ADC)
+        try:
+            import google.auth  # type: ignore
+
+            credentials, _ = google.auth.default(scopes=DRIVE_SCOPES)
+        except Exception as exc:  # pragma: no cover - logging utilisateur
+            raise RuntimeError(
+                "Aucun identifiant Google Drive disponible. Fournissez "
+                "--drive-service-account, configurez OAuth ou "
+                "GOOGLE_APPLICATION_CREDENTIALS."
+            ) from exc
+
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def _escape_drive_name(name: str) -> str:
+    return name.replace("'", "\\'")
+
+
+class DriveUploader:
+    def __init__(self, service, chunk_size: int = 20 * 1024 * 1024) -> None:
+        from googleapiclient.http import MediaFileUpload
+
+        self._service = service
+        self._MediaFileUpload = MediaFileUpload
+        self._folder_cache: Dict[tuple[str, str], str] = {}
+        self._chunk_size = max(256 * 1024, (chunk_size // (256 * 1024)) * (256 * 1024))
+
+    def ensure_folder(self, parent_id: str, folder_name: str) -> str:
+        key = (parent_id, folder_name)
+        if key in self._folder_cache:
+            return self._folder_cache[key]
+
+        query = (
+            f"name = '{_escape_drive_name(folder_name)}' "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            f"and '{parent_id}' in parents and trashed = false"
+        )
+        response = (
+            self._service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="files(id, name)",
+                pageSize=1,
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        files = response.get("files", [])
+        if files:
+            folder_id = files[0]["id"]
+        else:
+            metadata = {
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            }
+            folder_id = (
+                self._service.files()
+                .create(body=metadata, fields="id", supportsAllDrives=True)
+                .execute()["id"]
+            )
+        self._folder_cache[key] = folder_id
+        return folder_id
+
+    def upload_file(self, local_path: Path, parent_id: str) -> str:
+        mime_type, _ = mimetypes.guess_type(local_path.name)
+        media = self._MediaFileUpload(
+            str(local_path),
+            mimetype=mime_type or "application/octet-stream",
+            resumable=True,
+            chunksize=self._chunk_size,
+        )
+        metadata = {"name": local_path.name, "parents": [parent_id]}
+        request = self._service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True,
+        )
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if status is not None:
+                progress = int(status.progress() * 100)
+                print(f"[Drive] Téléversement {local_path.name}: {progress}%")
+        return response["id"]
+
+
+def _upload_directory(
+    uploader: DriveUploader,
+    local_root: Path,
+    remote_root_id: str,
+    remove_local: bool = False,
+) -> None:
+    local_root = local_root.resolve()
+    for file_path in sorted(local_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel_parts = file_path.relative_to(local_root).parts[:-1]
+        parent_id = remote_root_id
+        for part in rel_parts:
+            parent_id = uploader.ensure_folder(parent_id, part)
+        uploader.upload_file(file_path, parent_id)
+        if remove_local:
+            file_path.unlink()
+
+    if remove_local:
+        shutil.rmtree(local_root, ignore_errors=True)
+
+
+def _stream_upload_directory(
+    uploader: DriveUploader,
+    local_root: Path,
+    remote_root_id: str,
+    remove_local: bool,
+    process: subprocess.Popen,
+    poll_interval: float = 15.0,
+    stable_delay: float = 5.0,
+) -> None:
+    local_root = local_root.resolve()
+    uploaded: Set[Path] = set()
+    seen_sizes: Dict[Path, Tuple[int, float]] = {}
+
+    def _collect_files() -> List[Path]:
+        if not local_root.exists():
+            return []
+        return [p for p in local_root.rglob("*") if p.is_file()]
+
+    def _upload_ready_files(force: bool = False) -> int:
+        uploaded_now = 0
+        current_files = _collect_files()
+        existing_paths = set(current_files)
+        # Nettoyage des entrées obsolètes
+        for stale_path in list(seen_sizes):
+            if stale_path not in existing_paths:
+                seen_sizes.pop(stale_path, None)
+
+        for file_path in current_files:
+            if file_path in uploaded:
+                continue
+
+            try:
+                stat = file_path.stat()
+            except FileNotFoundError:
+                continue
+
+            now = time.monotonic()
+            size = stat.st_size
+            previous = seen_sizes.get(file_path)
+
+            ready = False
+            if previous is not None:
+                prev_size, prev_time = previous
+                if size == prev_size and (force or now - prev_time >= stable_delay):
+                    ready = True
+
+            seen_sizes[file_path] = (size, now)
+
+            if not ready:
+                continue
+
+            rel_parts = file_path.relative_to(local_root).parts[:-1]
+            parent_id = remote_root_id
+            for part in rel_parts:
+                parent_id = uploader.ensure_folder(parent_id, part)
+
+            uploader.upload_file(file_path, parent_id)
+            if remove_local:
+                try:
+                    file_path.unlink()
+                except FileNotFoundError:
+                    pass
+            uploaded.add(file_path)
+            seen_sizes.pop(file_path, None)
+            uploaded_now += 1
+
+        return uploaded_now
+
+    # Première passe pour enregistrer les tailles initiales
+    _collect_files()
+
+    while True:
+        _upload_ready_files()
+        retcode = process.poll()
+        if retcode is not None:
+            # Processus terminé: on force quelques passes supplémentaires pour tout vider
+            flush_start = time.monotonic()
+            while True:
+                uploaded_this_round = _upload_ready_files(force=True)
+                remaining = [
+                    p
+                    for p in _collect_files()
+                    if p not in uploaded and p.exists()
+                ]
+                if not remaining:
+                    break
+                # Évite les boucles infinies si certains fichiers restent verrous
+                if time.monotonic() - flush_start > 300:
+                    break
+                if uploaded_this_round == 0:
+                    time.sleep(min(poll_interval, 5.0))
+            break
+
+        time.sleep(poll_interval)
+
+    if remove_local and local_root.exists():
+        shutil.rmtree(local_root, ignore_errors=True)
+
+
+def _run_dataset_with_streaming_upload(
+    cmd: List[str],
+    local_root: Path,
+    uploader: DriveUploader,
+    remote_root_id: str,
+    remove_local: bool,
+) -> None:
+    process = subprocess.Popen(cmd, cwd=str(REPO_ROOT))
+    try:
+        _stream_upload_directory(
+            uploader,
+            local_root,
+            remote_root_id,
+            remove_local,
+            process,
+        )
+    finally:
+        retcode = process.wait()
+
+    if retcode != 0:
+        raise subprocess.CalledProcessError(retcode, cmd)
 
 
 def _build_sweeper_command(args: argparse.Namespace, summary_path: Path) -> List[str]:
@@ -124,6 +405,8 @@ def _build_dataset_command(
         args.full_out_prefix,
         "--dataset-version",
         args.full_dataset_version,
+        "--output-dir",
+        str(args.full_output_dir),
         "--quality-report",
         str(args.full_quality_report),
     ]
@@ -209,11 +492,34 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--full-tickers-allow", default=None)
     parser.add_argument("--full-max-train-samples", type=int, default=None)
     parser.add_argument("--full-max-val-samples", type=int, default=None)
+    parser.add_argument("--full-output-dir", type=Path, default=Path("datasets"))
     parser.add_argument("--full-dataset-version", default="crypto_v3_dataset_best")
     parser.add_argument(
         "--full-quality-report",
         type=Path,
         default=Path("datasets/quality_report_full.json"),
+    )
+    parser.add_argument("--drive-folder-id", default=None)
+    parser.add_argument("--drive-service-account", type=Path, default=None)
+    parser.add_argument(
+        "--drive-oauth-client-secrets",
+        type=Path,
+        default=None,
+        help="Chemin vers le fichier client OAuth (authentification utilisateur)",
+    )
+    parser.add_argument(
+        "--drive-oauth-token-path",
+        type=Path,
+        default=None,
+        help="Chemin d'enregistrement du token OAuth (défaut: drive_token.json)",
+    )
+    parser.add_argument("--drive-subfolder-name", default=None)
+    parser.add_argument("--drive-remove-local", action="store_true")
+    parser.add_argument(
+        "--drive-chunk-size",
+        type=int,
+        default=20 * 1024 * 1024,
+        help="Taille des chunks (en octets) pour l'upload Drive (multiple de 256k).",
     )
     parser.add_argument("--extra-dataset-args", nargs=argparse.REMAINDER, default=[])
     parser.add_argument("--dry-run", action="store_true")
@@ -230,7 +536,48 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
+    # Préparation des chemins de sortie
+    args.full_output_dir = args.full_output_dir.expanduser()
+    args.full_quality_report = args.full_quality_report.expanduser()
+    drive_service_account: Optional[Path] = None
+    if args.drive_service_account is not None:
+        drive_service_account = args.drive_service_account.expanduser().resolve()
+
+    drive_oauth_client_secrets: Optional[Path] = None
+    if args.drive_oauth_client_secrets is not None:
+        drive_oauth_client_secrets = (
+            args.drive_oauth_client_secrets.expanduser().resolve()
+        )
+
+    drive_oauth_token_path: Optional[Path] = None
+    if args.drive_oauth_token_path is not None:
+        drive_oauth_token_path = args.drive_oauth_token_path.expanduser()
     reports_dir = _ensure_reports_dir()
+
+    upload_to_drive = bool(args.drive_folder_id)
+    run_timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+
+    if upload_to_drive:
+        run_dir_name = f"{args.full_out_prefix}_{run_timestamp}"
+        args.full_output_dir = args.full_output_dir / run_dir_name
+        if not args.drive_subfolder_name:
+            args.drive_subfolder_name = run_dir_name
+
+    args.full_output_dir.mkdir(parents=True, exist_ok=True)
+    if upload_to_drive:
+        args.full_quality_report = args.full_output_dir / args.full_quality_report.name
+
+    drive_uploader: Optional[DriveUploader] = None
+    if upload_to_drive and not args.dry_run:
+        service = _build_drive_service(
+            drive_service_account,
+            drive_oauth_client_secrets,
+            drive_oauth_token_path,
+        )
+        drive_uploader = DriveUploader(service, chunk_size=args.drive_chunk_size)
+
+    if upload_to_drive and args.dry_run:
+        print("[Dry-run] Upload Google Drive demandé mais non exécuté.")
 
     summary_path = args.sweep_summary
     if summary_path is None:
@@ -257,7 +604,43 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(json.dumps(best_cfg, indent=2, ensure_ascii=False))
 
     dataset_cmd = _build_dataset_command(best_cfg, args)
-    run_command(dataset_cmd, dry_run=args.dry_run)
+
+    if upload_to_drive and not args.dry_run and drive_uploader is not None:
+        assert args.drive_subfolder_name is not None
+        remote_root = args.drive_folder_id
+        assert remote_root is not None
+        remote_subfolder_id = drive_uploader.ensure_folder(
+            remote_root, args.drive_subfolder_name
+        )
+        _run_dataset_with_streaming_upload(
+            dataset_cmd,
+            args.full_output_dir,
+            drive_uploader,
+            remote_subfolder_id,
+            remove_local=args.drive_remove_local,
+        )
+        print(
+            "Upload Google Drive terminé → dossier:",
+            f"https://drive.google.com/drive/folders/{remote_subfolder_id}",
+        )
+    else:
+        run_command(dataset_cmd, dry_run=args.dry_run)
+        if upload_to_drive and not args.dry_run and drive_uploader is not None:
+            remote_root = args.drive_folder_id
+            assert remote_root is not None
+            remote_subfolder_id = drive_uploader.ensure_folder(
+                remote_root, args.drive_subfolder_name or args.full_out_prefix
+            )
+            _upload_directory(
+                drive_uploader,
+                args.full_output_dir,
+                remote_subfolder_id,
+                remove_local=args.drive_remove_local,
+            )
+            print(
+                "Upload Google Drive terminé → dossier:",
+                f"https://drive.google.com/drive/folders/{remote_subfolder_id}",
+            )
 
 
 if __name__ == "__main__":

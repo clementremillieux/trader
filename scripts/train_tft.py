@@ -12,12 +12,36 @@ import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Sequence
+from typing import Any, Dict, Iterator, List, Sequence
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
+
+try:
+    AUTOCast = torch.amp.autocast  # type: ignore[attr-defined]
+    GradScalerCls = torch.amp.GradScaler  # type: ignore[attr-defined]
+    AMP_HAS_DEVICE_TYPE = True
+except AttributeError:  # pragma: no cover - fallback for older PyTorch
+    from torch.cuda.amp import autocast as AUTOCast  # type: ignore
+    from torch.cuda.amp import GradScaler as GradScalerCls  # type: ignore
+
+    AMP_HAS_DEVICE_TYPE = False
+
+
+def amp_autocast(device_type: str, enabled: bool):
+    if AMP_HAS_DEVICE_TYPE:
+        return AUTOCast(device_type=device_type, enabled=enabled)  # type: ignore[call-arg]
+    return AUTOCast(enabled=enabled)  # type: ignore[call-arg]
+
+
+def create_grad_scaler(enabled: bool):
+    if AMP_HAS_DEVICE_TYPE:
+        return GradScalerCls(device_type="cuda", enabled=enabled)  # type: ignore[call-arg]
+    return GradScalerCls(enabled=enabled)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -30,6 +54,80 @@ from app.model.temporal_fusion_transformer import (  # noqa: E402
 
 
 LOGGER = logging.getLogger("train_tft")
+
+MetricsDict = Dict[str, Any]
+
+
+class FocalLoss(torch.nn.Module):
+    def __init__(
+        self,
+        weight: torch.Tensor | None = None,
+        gamma: float = 2.0,
+        gamma_per_class: torch.Tensor | None = None,
+        alpha: torch.Tensor | None = None,
+        label_smoothing: torch.Tensor | None = None,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        if gamma < 0:
+            raise ValueError("gamma doit être >= 0")
+        self.register_buffer("weight", weight if weight is not None else None)
+        self.gamma = gamma
+        if gamma_per_class is not None and gamma_per_class.dim() != 1:
+            raise ValueError("gamma_per_class doit être un tenseur 1D")
+        self.register_buffer(
+            "gamma_per_class",
+            gamma_per_class if gamma_per_class is not None else None,
+        )
+        if alpha is not None and alpha.dim() != 1:
+            raise ValueError("alpha doit être un tenseur 1D")
+        self.register_buffer("alpha", alpha if alpha is not None else None)
+        if label_smoothing is not None and label_smoothing.dim() != 1:
+            raise ValueError("label_smoothing doit être un tenseur 1D")
+        self.register_buffer(
+            "label_smoothing_tensor",
+            label_smoothing if label_smoothing is not None else None,
+        )
+        if reduction not in {"none", "mean", "sum"}:
+            raise ValueError("reduction doit être 'none', 'mean' ou 'sum'")
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = log_probs.exp()
+        targets = targets.long()
+        target_log_probs = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        target_probs = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+
+        if self.gamma_per_class is not None:
+            gammas = self.gamma_per_class.to(logits.device).gather(0, targets)
+        else:
+            gammas = torch.full_like(target_probs, self.gamma, dtype=logits.dtype)
+        focal_factor = (1 - target_probs).pow(gammas)
+
+        if self.weight is not None:
+            weights = self.weight.to(logits.device)
+            focal_factor = focal_factor * weights.gather(0, targets)
+        if self.alpha is not None:
+            alphas = self.alpha.to(logits.device)
+            focal_factor = focal_factor * alphas.gather(0, targets)
+
+        if self.label_smoothing_tensor is not None:
+            smoothing = self.label_smoothing_tensor.to(logits.device)
+            n_classes = logits.size(1)
+            eps = smoothing.gather(0, targets).unsqueeze(1)
+            true_dist = torch.full_like(log_probs, 0.0)
+            true_dist.scatter_(1, targets.unsqueeze(1), 1.0)
+            true_dist = true_dist * (1 - eps) + (eps / (n_classes - 1))
+            loss = -(true_dist * focal_factor.unsqueeze(1) * log_probs).sum(dim=1)
+        else:
+            loss = -focal_factor * target_log_probs
+
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
 
 
 @dataclass
@@ -57,13 +155,37 @@ def setup_logging(verbose: bool) -> None:
     )
 
 
-def list_dataset_files(path: str, prefix: str, max_files: int | None) -> List[Path]:
-    files = sorted(Path(path).glob(f"{prefix}*.pickle"))
+def list_dataset_files(
+    path: Path | str, prefix: str, max_files: int | None
+) -> List[Path]:
+    base_path = Path(path)
+    files = sorted(base_path.glob(f"{prefix}*.pickle"))
     if max_files is not None:
         files = files[:max_files]
     if not files:
         raise FileNotFoundError(f"Aucun fichier trouvé pour le préfixe {prefix!r}")
     return files
+
+
+def sanitize_array(
+    array: np.ndarray,
+    *,
+    nan_value: float = 0.0,
+    posinf_value: float | None = None,
+    neginf_value: float | None = None,
+) -> np.ndarray:
+    """Replace NaN/Inf values with finite fallbacks."""
+
+    if posinf_value is None:
+        posinf_value = nan_value
+    if neginf_value is None:
+        neginf_value = nan_value
+    return np.nan_to_num(
+        array,
+        nan=nan_value,
+        posinf=posinf_value,
+        neginf=neginf_value,
+    )
 
 
 def compute_statistics(
@@ -112,16 +234,17 @@ def compute_statistics(
             sample_size = max(1, int(len(indices) * sample_fraction))
             indices = rng.choice(indices, size=sample_size, replace=False)
 
-        X_sel = X[indices]
+        X_sel = sanitize_array(X[indices].astype(np.float64))
         y_sel = y_cls[indices]
-        reg_sel = y_reg[indices].astype(np.float64)
+        reg_sel = sanitize_array(y_reg[indices].astype(np.float64))
         vol_sel = np.clip(y_vol[indices].astype(np.float64), a_min=0.0, a_max=None)
         if vol_log:
             vol_sel = np.log1p(vol_sel)
-        tau_sel = tau[indices].astype(np.float64)
+        vol_sel = sanitize_array(vol_sel)
+        tau_sel = sanitize_array(tau[indices].astype(np.float64))
         tau_max = max(tau_max, int(np.max(tau_sel)))
 
-        flat = X_sel.reshape(-1, f).astype(np.float64)
+        flat = X_sel.reshape(-1, f)
         if sum_vec is None:
             sum_vec = flat.sum(axis=0)
             sum_sq = np.square(flat).sum(axis=0)
@@ -183,6 +306,7 @@ class MultiFileSequenceDataset(IterableDataset):
         shuffle_samples: bool,
         seed: int,
         limit_per_file: int | None,
+        balance_classes: bool,
     ) -> None:
         super().__init__()
         self.file_paths = [Path(p) for p in file_paths]
@@ -191,6 +315,7 @@ class MultiFileSequenceDataset(IterableDataset):
         self.limit_per_file = limit_per_file
         self.stats = stats
         self.seed = seed
+        self.balance_classes = balance_classes
         self.mean = stats.mean.reshape(1, 1, -1)
         self.std = stats.std.reshape(1, 1, -1)
         self.reg_mean = stats.reg_mean
@@ -198,6 +323,13 @@ class MultiFileSequenceDataset(IterableDataset):
         self.vol_mean = stats.vol_mean
         self.vol_std = stats.vol_std
         self.vol_log = stats.vol_log
+
+    def __getitem__(
+        self, index: int
+    ) -> Any:  # pragma: no cover - IterableDataset contract
+        raise NotImplementedError(
+            "MultiFileSequenceDataset ne supporte pas l'indexation"
+        )
 
     def _select_files_for_worker(self) -> List[Path]:
         worker_info = get_worker_info()
@@ -238,14 +370,35 @@ class MultiFileSequenceDataset(IterableDataset):
             if self.shuffle_samples:
                 rng.shuffle(indices)
 
+            if self.balance_classes:
+                class_buckets: Dict[int, List[int]] = {0: [], 1: [], 2: []}
+                for idx in indices:
+                    cls_idx = int(y_cls[idx] + 1)
+                    class_buckets.setdefault(cls_idx, []).append(idx)
+                non_empty = [bucket for bucket in class_buckets.values() if bucket]
+                if non_empty:
+                    max_len = max(len(bucket) for bucket in non_empty)
+                    balanced_indices: List[int] = []
+                    for i in range(max_len):
+                        for bucket in non_empty:
+                            balanced_indices.append(bucket[i % len(bucket)])
+                    if self.shuffle_samples:
+                        rng.shuffle(balanced_indices)
+                    indices = balanced_indices
+
             np.subtract(X, self.mean, out=X)
             np.divide(X, self.std, out=X)
+            X = sanitize_array(X)
 
             y_reg = (y_reg - self.reg_mean) / self.reg_std
+            y_reg = sanitize_array(y_reg)
             y_vol = np.clip(y_vol, a_min=0.0, a_max=None)
             if self.vol_log:
                 y_vol = np.log1p(y_vol)
             y_vol = (y_vol - self.vol_mean) / self.vol_std
+            y_vol = sanitize_array(y_vol)
+            tau = sanitize_array(tau, nan_value=0.0, posinf_value=0.0, neginf_value=0.0)
+            tau = np.clip(tau, a_min=0.0, a_max=None)
 
             for idx in indices:
                 yield {
@@ -283,6 +436,7 @@ def prepare_dataloader(
     seed: int,
     limit_per_file: int | None,
     num_workers: int,
+    balance_classes: bool,
 ) -> DataLoader:
     dataset = MultiFileSequenceDataset(
         file_paths=files,
@@ -291,6 +445,7 @@ def prepare_dataloader(
         shuffle_samples=shuffle_samples,
         seed=seed,
         limit_per_file=limit_per_file,
+        balance_classes=balance_classes,
     )
     return DataLoader(
         dataset,
@@ -322,15 +477,58 @@ def train(
     mixed_precision: bool,
     output_dir: Path,
     save_every: int,
-) -> Dict[str, float]:
+    focal_gamma: float = 2.0,
+    focal_gamma_per_class: torch.Tensor | None = None,
+    focal_alpha: torch.Tensor | None = None,
+    label_smoothing: torch.Tensor | None = None,
+    curriculum_epochs: int = 0,
+    early_stopping_patience: int = 0,
+    log_interval: int = 0,
+    val_log_interval: int = 0,
+) -> MetricsDict:
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scaler = torch.cuda.amp.GradScaler(enabled=mixed_precision)
-    cls_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights.to(device))
+    autocast_device = "cuda" if device.type == "cuda" else device.type
+    use_cuda_amp = mixed_precision and device.type == "cuda"
+    scaler = create_grad_scaler(use_cuda_amp)
+    class_weights = class_weights.to(torch.float32)
+    focal_gamma_tensor = (
+        focal_gamma_per_class.to(torch.float32)
+        if focal_gamma_per_class is not None
+        else None
+    )
+    focal_alpha_tensor = (
+        focal_alpha.to(torch.float32) if focal_alpha is not None else None
+    )
+    label_smoothing_tensor = (
+        label_smoothing.to(torch.float32) if label_smoothing is not None else None
+    )
+    cls_loss_fn = FocalLoss(
+        weight=class_weights,
+        gamma=focal_gamma,
+        gamma_per_class=focal_gamma_tensor,
+        alpha=focal_alpha_tensor,
+        label_smoothing=label_smoothing_tensor,
+    )
     reg_loss_fn = torch.nn.SmoothL1Loss()
     vol_loss_fn = torch.nn.SmoothL1Loss()
 
+    binary_loss_fn: torch.nn.Module | None = None
+    if curriculum_epochs > 0:
+        directional_weight = class_weights[[0, 2]].mean()
+        binary_weights = torch.stack([class_weights[1], directional_weight])
+        binary_weights = binary_weights / binary_weights.sum() * 2.0
+        binary_loss_fn = torch.nn.NLLLoss(weight=binary_weights.to(device))
+
     best_val_loss = float("inf")
-    best_metrics: Dict[str, float] = {}
+    best_metrics: MetricsDict = {}
+    best_balanced_acc = -float("inf")
+    patience_counter = 0
+
+    def _safe_len(obj: Any) -> int | None:
+        try:
+            return len(obj)  # type: ignore[arg-type]
+        except (TypeError, AttributeError):
+            return None
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -341,8 +539,14 @@ def train(
         running_acc = 0.0
         total_samples = 0
 
-        progress = tqdm(train_loader, desc=f"Epoch {epoch} [train]", leave=False)
-        for batch in progress:
+        total_train_batches = _safe_len(train_loader)
+        progress = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch} [train]",
+            leave=False,
+            total=total_train_batches,
+        )
+        for step, batch in enumerate(progress, start=1):
             inputs = batch["inputs"].to(device)
             tau = batch["tau"].to(device)
             y_cls = batch["y_cls"].to(device)
@@ -352,16 +556,34 @@ def train(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=mixed_precision):
+            with amp_autocast(autocast_device, use_cuda_amp):
                 outputs = model(inputs, tau)
                 logits = outputs["logits"]
                 reg_pred = outputs["ret"]
                 vol_pred = outputs["vol"]
 
-                cls_loss = cls_loss_fn(logits, y_cls)
+                if curriculum_epochs > 0 and epoch <= curriculum_epochs:
+                    if binary_loss_fn is None:
+                        raise RuntimeError("binary_loss_fn non initialisé")
+                    log_probs = F.log_softmax(logits, dim=1)
+                    binary_target = (y_cls != 1).long()
+                    dir_log_prob = torch.logaddexp(log_probs[:, 0], log_probs[:, 2])
+                    binary_log_probs = torch.stack(
+                        [log_probs[:, 1], dir_log_prob], dim=1
+                    )
+                    cls_loss = binary_loss_fn(binary_log_probs, binary_target)
+                else:
+                    cls_loss = cls_loss_fn(logits, y_cls)
                 reg_loss = reg_loss_fn(reg_pred, y_reg)
                 vol_loss = vol_loss_fn(vol_pred, y_vol)
                 loss = cls_loss + lambda_reg * reg_loss + lambda_vol * vol_loss
+
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "NaN ou Inf détecté dans la loss. Réduisez le learning_rate, "
+                    "désactivez la précision mixte ou inspectez vos données pour des "
+                    "valeurs extrêmes / NaN."
+                )
 
             scaler.scale(loss).backward()
             if grad_clip > 0:
@@ -384,7 +606,20 @@ def train(
                 acc=running_acc / total_samples,
             )
 
-        train_metrics = {
+            if log_interval > 0 and step % log_interval == 0:
+                LOGGER.info(
+                    "Epoch %d [train] step %d%s | loss=%.4f cls=%.4f reg=%.4f vol=%.4f acc=%.4f",
+                    epoch,
+                    step,
+                    f"/{total_train_batches}" if total_train_batches else "",
+                    running_loss / total_samples,
+                    running_cls / total_samples,
+                    running_reg / total_samples,
+                    running_vol / total_samples,
+                    running_acc / total_samples,
+                )
+
+        train_metrics: MetricsDict = {
             "train_loss": running_loss / total_samples,
             "train_cls_loss": running_cls / total_samples,
             "train_reg_loss": running_reg / total_samples,
@@ -405,8 +640,17 @@ def train(
         val_samples = 0
         val_confusion = torch.zeros((3, 3), dtype=torch.long)
 
+        total_val_batches = _safe_len(val_loader)
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch} [val]", leave=False):
+            for val_step, batch in enumerate(
+                tqdm(
+                    val_loader,
+                    desc=f"Epoch {epoch} [val]",
+                    leave=False,
+                    total=total_val_batches,
+                ),
+                start=1,
+            ):
                 inputs = batch["inputs"].to(device)
                 tau = batch["tau"].to(device)
                 y_cls = batch["y_cls"].to(device)
@@ -419,7 +663,18 @@ def train(
                 reg_pred = outputs["ret"]
                 vol_pred = outputs["vol"]
 
-                cls_loss = cls_loss_fn(logits, y_cls)
+                if curriculum_epochs > 0 and epoch <= curriculum_epochs:
+                    if binary_loss_fn is None:
+                        raise RuntimeError("binary_loss_fn non initialisé")
+                    log_probs = F.log_softmax(logits, dim=1)
+                    binary_target = (y_cls != 1).long()
+                    dir_log_prob = torch.logaddexp(log_probs[:, 0], log_probs[:, 2])
+                    binary_log_probs = torch.stack(
+                        [log_probs[:, 1], dir_log_prob], dim=1
+                    )
+                    cls_loss = binary_loss_fn(binary_log_probs, binary_target)
+                else:
+                    cls_loss = cls_loss_fn(logits, y_cls)
                 reg_loss = reg_loss_fn(reg_pred, y_reg)
                 vol_loss = vol_loss_fn(vol_pred, y_vol)
                 loss = cls_loss + lambda_reg * reg_loss + lambda_vol * vol_loss
@@ -436,18 +691,42 @@ def train(
                 counts = torch.bincount(pairs, minlength=9)
                 val_confusion += counts.view(3, 3)
 
+                if val_log_interval > 0 and val_step % val_log_interval == 0:
+                    LOGGER.info(
+                        "Epoch %d [val] step %d%s | loss=%.4f cls=%.4f reg=%.4f vol=%.4f acc=%.4f",
+                        epoch,
+                        val_step,
+                        f"/{total_val_batches}" if total_val_batches else "",
+                        val_loss / val_samples,
+                        val_cls / val_samples,
+                        val_reg / val_samples,
+                        val_vol / val_samples,
+                        val_acc / val_samples,
+                    )
+
+        epoch_metrics: MetricsDict
+
         if val_samples > 0:
-            metrics = {
+            confusion = val_confusion.numpy()
+            per_class = confusion.sum(axis=1)
+            recalls = np.divide(
+                np.diag(confusion),
+                per_class,
+                out=np.zeros_like(per_class, dtype=np.float64),
+                where=per_class > 0,
+            )
+            balanced_acc = float(np.mean(recalls))
+            epoch_metrics = {
                 **train_metrics,
                 "val_loss": val_loss / val_samples,
                 "val_cls_loss": val_cls / val_samples,
                 "val_reg_loss": val_reg / val_samples,
                 "val_vol_loss": val_vol / val_samples,
                 "val_acc": val_acc / val_samples,
-                "val_confusion": val_confusion.tolist(),
+                "val_balanced_acc": balanced_acc,
+                "val_confusion": confusion.tolist(),
             }
 
-            confusion = val_confusion.numpy()
             buy_tp = int(confusion[2, 2])
             buy_fp_from_sell = int(confusion[0, 2])
             sell_tp = int(confusion[0, 0])
@@ -460,7 +739,7 @@ def train(
             buy_ratio = ratio(buy_tp, buy_fp_from_sell)
             sell_ratio = ratio(sell_tp, sell_fp_from_buy)
 
-            metrics.update(
+            epoch_metrics.update(
                 {
                     "val_buy_true": buy_tp,
                     "val_buy_false_from_sell": buy_fp_from_sell,
@@ -470,7 +749,9 @@ def train(
                     "val_sell_true_ratio": sell_ratio,
                 }
             )
-            LOGGER.info("Epoch %d | %s", epoch, json.dumps(metrics, ensure_ascii=False))
+            LOGGER.info(
+                "Epoch %d | %s", epoch, json.dumps(epoch_metrics, ensure_ascii=False)
+            )
 
             LOGGER.info(
                 "Validation confusion (rows=réel [-1,0,1], colonnes=prédit [-1,0,1]): %s",
@@ -493,13 +774,14 @@ def train(
                 "Validation vide: aucun échantillon n'a été évalué. "
                 "Les métriques val seront nulles."
             )
-            metrics = {
+            epoch_metrics = {
                 **train_metrics,
                 "val_loss": None,
                 "val_cls_loss": None,
                 "val_reg_loss": None,
                 "val_vol_loss": None,
                 "val_acc": None,
+                "val_balanced_acc": None,
                 "val_confusion": val_confusion.tolist(),
                 "val_buy_true": 0,
                 "val_buy_false_from_sell": 0,
@@ -508,16 +790,40 @@ def train(
                 "val_sell_false_from_buy": 0,
                 "val_sell_true_ratio": None,
             }
-            LOGGER.info("Epoch %d | %s", epoch, json.dumps(metrics, ensure_ascii=False))
+            LOGGER.info(
+                "Epoch %d | %s", epoch, json.dumps(epoch_metrics, ensure_ascii=False)
+            )
 
-        if metrics["val_loss"] is not None and metrics["val_loss"] < best_val_loss:
-            best_val_loss = metrics["val_loss"]
-            best_metrics = metrics
+        val_balanced_acc_metric = epoch_metrics.get("val_balanced_acc")
+        improved_balanced = False
+        if isinstance(val_balanced_acc_metric, (int, float)):
+            if val_balanced_acc_metric > best_balanced_acc + 1e-4:
+                best_balanced_acc = float(val_balanced_acc_metric)
+                improved_balanced = True
+                patience_counter = 0
+        elif val_balanced_acc_metric is None:
+            improved_balanced = False
+        if (
+            not improved_balanced
+            and early_stopping_patience > 0
+            and isinstance(val_balanced_acc_metric, (int, float))
+        ):
+            patience_counter += 1
+
+        val_loss_metric = epoch_metrics.get("val_loss")
+        if (
+            isinstance(val_loss_metric, (int, float))
+            and float(val_loss_metric) < best_val_loss
+        ):
+            best_val_loss = float(val_loss_metric)
+
+        if improved_balanced or not best_metrics:
+            best_metrics = epoch_metrics
             output_dir.mkdir(parents=True, exist_ok=True)
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
-                    "metrics": metrics,
+                    "metrics": epoch_metrics,
                 },
                 output_dir / "best_val_checkpoint.pt",
             )
@@ -527,10 +833,18 @@ def train(
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
-                    "metrics": metrics,
+                    "metrics": epoch_metrics,
                 },
                 output_dir / f"checkpoint_epoch_{epoch}.pt",
             )
+
+        if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
+            LOGGER.info(
+                "Arrêt précoce déclenché après %d epochs sans amélioration "
+                "de la balanced accuracy",
+                early_stopping_patience,
+            )
+            break
 
     return best_metrics
 
@@ -541,12 +855,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--lambda-reg", type=float, default=0.3)
-    parser.add_argument("--lambda-vol", type=float, default=0.05)
+    parser.add_argument("--lambda-reg", type=float, default=0.1)
+    parser.add_argument("--lambda-vol", type=float, default=0.02)
     parser.add_argument("--train-prefix", type=str, default="full_dataset_focus_train_")
     parser.add_argument("--val-prefix", type=str, default="full_dataset_focus_val_")
+    parser.add_argument("--dataset-root", type=Path, default=Path("datasets"))
     parser.add_argument("--max-train-files", type=int, default=None)
     parser.add_argument("--max-val-files", type=int, default=None)
     parser.add_argument("--limit-samples-per-file", type=int, default=None)
@@ -557,6 +872,65 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--output-dir", type=Path, default=Path("models/tft"))
     parser.add_argument("--save-every", type=int, default=0)
+    parser.add_argument("--focal-gamma", type=float, default=2.5)
+    parser.add_argument(
+        "--focal-gamma-per-class",
+        type=float,
+        nargs=3,
+        metavar=("GAMMA_SELL", "GAMMA_NEUTRAL", "GAMMA_BUY"),
+        default=[3.0, 2.0, 3.0],
+        help="Gamma focal par classe (ordre: sell, neutral, buy)",
+    )
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        nargs=3,
+        metavar=("ALPHA_SELL", "ALPHA_NEUTRAL", "ALPHA_BUY"),
+        default=[1.4, 1.0, 1.6],
+        help="Pondérations alpha par classe pour la focal loss",
+    )
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        nargs=3,
+        metavar=("SMOOTH_SELL", "SMOOTH_NEUTRAL", "SMOOTH_BUY"),
+        default=[0.05, 0.02, 0.05],
+        help="Label smoothing asymétrique (valeurs entre 0 et 0.3 typiquement)",
+    )
+    parser.add_argument(
+        "--balance-classes",
+        action="store_true",
+        help="Rééquilibre les classes en sur-échantillonnant les minoritaires",
+    )
+    parser.add_argument(
+        "--curriculum-epochs",
+        type=int,
+        default=0,
+        help="Nombre d'epochs en curriculum (neutre vs directionnel)",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=0,
+        help="Patience (en epochs) pour l'arrêt précoce basé sur la balanced accuracy",
+    )
+    parser.add_argument("--hidden-dim", type=int, default=384)
+    parser.add_argument("--num-heads", type=int, default=6)
+    parser.add_argument("--num-transformer-blocks", type=int, default=5)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--static-dim", type=int, default=192)
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=200,
+        help="Nombre de batchs entre deux logs détaillés en entraînement (0 = désactivé)",
+    )
+    parser.add_argument(
+        "--val-log-interval",
+        type=int,
+        default=100,
+        help="Nombre de batchs entre deux logs détaillés en validation (0 = désactivé)",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -565,8 +939,11 @@ def main() -> None:
     args = parse_args()
     setup_logging(args.verbose)
 
-    train_files = list_dataset_files(args.train_prefix, args.max_train_files)
-    val_files = list_dataset_files(args.val_prefix, args.max_val_files)
+    dataset_root = Path(args.dataset_root).expanduser()
+    train_files = list_dataset_files(
+        dataset_root, args.train_prefix, args.max_train_files
+    )
+    val_files = list_dataset_files(dataset_root, args.val_prefix, args.max_val_files)
 
     LOGGER.info(
         "Calcul des statistiques de normalisation (%d fichiers)", len(train_files)
@@ -594,6 +971,7 @@ def main() -> None:
         seed=args.seed,
         limit_per_file=args.limit_samples_per_file,
         num_workers=args.num_workers,
+        balance_classes=args.balance_classes,
     )
     val_loader = prepare_dataloader(
         files=val_files,
@@ -604,6 +982,7 @@ def main() -> None:
         seed=args.seed,
         limit_per_file=args.limit_samples_per_file,
         num_workers=args.num_workers,
+        balance_classes=args.balance_classes,
     )
 
     est_train_samples = estimate_num_samples(train_files, stats)
@@ -623,17 +1002,49 @@ def main() -> None:
         input_dim=stats.feature_dim,
         seq_len=stats.seq_len,
         tau_vocab_size=stats.tau_vocab_size,
-        hidden_dim=512,
-        num_heads=8,
-        num_transformer_blocks=6,
-        dropout=0.2,
+        hidden_dim=args.hidden_dim,
+        num_heads=args.num_heads,
+        num_transformer_blocks=args.num_transformer_blocks,
+        dropout=args.dropout,
         conv_kernel_sizes=(3, 5, 7),
         conv_dilations=(1, 2, 4),
-        static_dim=256,
+        static_dim=args.static_dim,
     )
 
     model = TemporalFusionTransformer(cfg).to(device)
     class_weights = torch.from_numpy(stats.class_weights)
+
+    focal_gamma_per_class_tensor = (
+        torch.tensor(args.focal_gamma_per_class, dtype=torch.float32)
+        if args.focal_gamma_per_class is not None
+        else None
+    )
+    focal_alpha_tensor = (
+        torch.tensor(args.focal_alpha, dtype=torch.float32)
+        if args.focal_alpha is not None
+        else None
+    )
+    label_smoothing_tensor = (
+        torch.tensor(args.label_smoothing, dtype=torch.float32)
+        if args.label_smoothing is not None
+        else None
+    )
+
+    if label_smoothing_tensor is not None and torch.any(
+        (label_smoothing_tensor < 0) | (label_smoothing_tensor >= 1)
+    ):
+        raise ValueError("Les valeurs de label smoothing doivent être dans [0, 1).")
+
+    class_count = class_weights.numel()
+    for name, tensor in {
+        "focal_gamma_per_class": focal_gamma_per_class_tensor,
+        "focal_alpha": focal_alpha_tensor,
+        "label_smoothing": label_smoothing_tensor,
+    }.items():
+        if tensor is not None and tensor.numel() != class_count:
+            raise ValueError(
+                f"{name} doit contenir {class_count} valeurs (une par classe)."
+            )
 
     best_metrics = train(
         model=model,
@@ -649,6 +1060,14 @@ def main() -> None:
         mixed_precision=args.mixed_precision,
         output_dir=args.output_dir,
         save_every=args.save_every,
+        focal_gamma=args.focal_gamma,
+        focal_gamma_per_class=focal_gamma_per_class_tensor,
+        focal_alpha=focal_alpha_tensor,
+        label_smoothing=label_smoothing_tensor,
+        curriculum_epochs=args.curriculum_epochs,
+        early_stopping_patience=args.early_stopping_patience,
+        log_interval=args.log_interval,
+        val_log_interval=args.val_log_interval,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
