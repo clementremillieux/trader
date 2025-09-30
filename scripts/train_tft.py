@@ -23,10 +23,16 @@ from tqdm import tqdm  # type: ignore[import]
 try:
     AUTOCast = torch.amp.autocast  # type: ignore[attr-defined]
     GradScalerCls = torch.amp.GradScaler  # type: ignore[attr-defined]
-    AMP_HAS_DEVICE_TYPE = True
+    # Check if device_type is supported
+    import inspect
+
+    sig = inspect.signature(GradScalerCls.__init__)
+    AMP_HAS_DEVICE_TYPE = "device_type" in sig.parameters
 except AttributeError:  # pragma: no cover - fallback for older PyTorch
     from torch.cuda.amp import autocast as AUTOCast  # type: ignore
     from torch.cuda.amp import GradScaler as GradScalerCls  # type: ignore
+
+    AMP_HAS_DEVICE_TYPE = False
 
     AMP_HAS_DEVICE_TYPE = False
 
