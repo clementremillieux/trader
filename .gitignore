@@ -6,3 +6,4 @@ ticker_dataset*
 .cache_binance/
 datasets/*
 models/
+drive_token*
