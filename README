@@ -31,8 +31,19 @@ poetry run python scripts/create_full_dataset.py \
 	--drive-subfolder-name full_dataset_focus \
 	--drive-remove-local \
 	--extra-dataset-args \
-	  --bin-label-thr-atr 1.0 \
+	  --bin-label-thr-atr 1.5 \
 	  --min-volume-quantile 0.02 \
 	  --volume-filter-hours 24
 
 Avec `--drive-remove-local`, chaque fichier généré est envoyé sur Drive dès qu'il est prêt puis effacé du disque local.
+
+
+poetry run python scripts/create_full_dataset.py \
+  --full-max-batches 100000 \
+  --full-min-train-windows 400 \
+  --full-min-val-windows 80 \
+  --drive-folder-id 1N9Y1uHdewX3mOfB_-SY05oDkqiqTPOYz \
+  --drive-oauth-client-secrets client_secret.json \
+  --drive-oauth-token-path drive_token.json \
+  --drive-subfolder-name full_dataset_focus \
+  --drive-remove-local

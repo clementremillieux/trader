@@ -288,7 +288,14 @@ def _run_dataset_with_streaming_upload(
     remote_root_id: str,
     remove_local: bool,
 ) -> None:
-    process = subprocess.Popen(cmd, cwd=str(REPO_ROOT))
+    # Injecte une variable d'environnement pour indiquer au processus enfant
+    # qu'il est exécuté en mode streaming : il ne doit pas supprimer les shards
+    env = os.environ.copy()
+    env["STREAMING_UPLOAD_CHILD"] = "1"
+    # Passe l'ID de dossier parent Drive au processus enfant pour logs/usage éventuelle
+    env["DRIVE_PARENT_ID"] = str(remote_root_id)
+    print("[Parent] Lancement du processus enfant avec STREAMING_UPLOAD_CHILD=1")
+    process = subprocess.Popen(cmd, cwd=str(REPO_ROOT), env=env)
     try:
         _stream_upload_directory(
             uploader,
@@ -451,7 +458,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--windows", default="256,300")
     parser.add_argument("--strides", default="6")
     parser.add_argument("--bin-horizons", default="18,24,30")
-    parser.add_argument("--bin-thresholds", default="0.8,1.0,1.2")
+    parser.add_argument("--bin-thresholds", default="0.8,1.0,1.2,1.5")
     parser.add_argument("--score-target", default="y_bin")
     parser.add_argument(
         "--score-metric",
@@ -471,11 +478,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--sweep-max-train-samples", type=int, default=20_000)
     parser.add_argument("--sweep-max-val-samples", type=int, default=8_000)
     parser.add_argument("--extra-sweeper-args", nargs=argparse.REMAINDER, default=[])
-    parser.add_argument("--sweep-summary", type=Path, default=None)
+    parser.add_argument(
+        "--sweep-summary",
+        type=Path,
+        default=None,
+        help="Chemin d'un fichier de résumé de sweep existant à utiliser avec --skip-sweep.",
+    )
     parser.add_argument("--skip-sweep", action="store_true")
 
     parser.add_argument("--full-out-prefix", default="full_dataset")
-    parser.add_argument("--full-tickers-per-batch", type=int, default=20)
+    parser.add_argument("--full-tickers-per-batch", type=int, default=10)
     parser.add_argument("--full-max-batches", type=int, default=None)
     parser.add_argument("--full-start-batch", type=int, default=0)
     parser.add_argument("--full-min-train-windows", type=int, default=800)
@@ -578,19 +590,22 @@ def main(argv: Optional[List[str]] = None) -> None:
         print("[Dry-run] Upload Google Drive demandé mais non exécuté.")
 
     summary_path = args.sweep_summary
-    if summary_path is None:
-        summary_path = (
-            reports_dir / f"sweep_summary_{datetime.utcnow():%Y%m%dT%H%M%S}.json"
-        )
-
     if args.skip_sweep:
+        # Si --skip-sweep, summary_path doit être fourni et exister
+        if summary_path is None:
+            raise FileNotFoundError(
+                "Vous devez fournir --sweep-summary <fichier> avec --skip-sweep pour indiquer la config à utiliser."
+            )
         if not summary_path.exists():
             raise FileNotFoundError(
-                "Résumé de sweep introuvable"
-                f" ({summary_path}). Impossible de sauter l'étape de sweep."
+                f"Résumé de sweep introuvable ({summary_path}). Impossible de sauter l'étape de sweep."
             )
         best_cfg = _load_best_config(summary_path)
     else:
+        if summary_path is None:
+            summary_path = (
+                reports_dir / f"sweep_summary_{datetime.utcnow():%Y%m%dT%H%M%S}.json"
+            )
         env = os.environ.copy()
         env["SWEEP_MAX_TRAIN_SAMPLES"] = str(args.sweep_max_train_samples)
         env["SWEEP_MAX_VAL_SAMPLES"] = str(args.sweep_max_val_samples)

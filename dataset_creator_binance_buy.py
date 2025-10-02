@@ -281,6 +281,9 @@ class DatasetBuildConfig:
     volume_filter_hours: int = 12
     direction_margin: float = 0.0025
 
+    # Nouveau paramètre : taille max d'un shard (nombre de lignes)
+    max_rows_per_shard: Optional[int] = None
+
     @classmethod
     def from_cli(cls, argv: Optional[List[str]] = None) -> "DatasetBuildConfig":
         parser = argparse.ArgumentParser(
@@ -475,6 +478,13 @@ class DatasetBuildConfig:
             ),
         )
 
+        parser.add_argument(
+            "--max-rows-per-shard",
+            type=int,
+            default=None,
+            help="Nombre max de lignes par shard pickle (prioritaire sur la taille auto).",
+        )
+
         args = parser.parse_args(argv)
 
         return cls(
@@ -513,6 +523,7 @@ class DatasetBuildConfig:
             ),
             volume_filter_hours=args.volume_filter_hours,
             direction_margin=args.direction_margin,
+            max_rows_per_shard=args.max_rows_per_shard,
         )
 
     def dataset_path(self, split: str, batch_index: int) -> Path:
@@ -2351,7 +2362,22 @@ def save_new_batch(
     itemsize = int(X.dtype.itemsize) if hasattr(X, "dtype") else 4
     # budget ≈ 1 GiB pour X par shard (les autres arrays sont négligeables)
     max_bytes = 1_000_000_000
-    rows_per_shard = max(1, max_bytes // max(1, (T * F * itemsize)))
+    # Permet d'overrider la taille auto par un paramètre global
+    from inspect import currentframe
+
+    frame = currentframe()
+    # Recherche du paramètre max_rows_per_shard dans la pile d'appels
+    max_rows_per_shard = None
+    while frame:
+        local_vars = frame.f_locals
+        if "self" in local_vars and hasattr(local_vars["self"], "max_rows_per_shard"):
+            max_rows_per_shard = getattr(local_vars["self"], "max_rows_per_shard")
+            break
+        frame = frame.f_back
+    if max_rows_per_shard is not None and max_rows_per_shard > 0:
+        rows_per_shard = int(max_rows_per_shard)
+    else:
+        rows_per_shard = max(1, max_bytes // max(1, (T * F * itemsize)))
 
     def _write_single_file(pth: Path, obj: Dict[str, Any]) -> None:
         with pth.open("wb") as fh:
@@ -2408,6 +2434,25 @@ def save_new_batch(
         logger.info(
             "Shard sauvegardé %s (%d → %d)", shard_path.name, int(start), int(end)
         )
+
+        # Si le processus est lancé en mode "streaming" (parent uploadant les fichiers),
+        # ne PAS supprimer le shard local : le parent (create_full_dataset.py) va
+        # détecter, uploader et supprimer le fichier. Sinon, conserver le comportement
+        # précédent et supprimer le shard immédiatement.
+        streaming_child = os.environ.get("STREAMING_UPLOAD_CHILD", "0") == "1"
+        if streaming_child:
+            logger.info(
+                "Streaming mode enfant détecté — conservation du shard pour l'uploader: %s",
+                shard_path,
+            )
+        else:
+            try:
+                os.remove(shard_path)
+                logger.info("Shard local supprimé: %s", shard_path)
+            except Exception as e:
+                logger.warning(
+                    "Impossible de supprimer le shard local %s: %s", shard_path, e
+                )
         shard_idx += 1
         start = end
 

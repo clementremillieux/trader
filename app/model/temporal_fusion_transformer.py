@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -189,6 +189,9 @@ class TFTConfig:
     conv_kernel_sizes: Tuple[int, ...] = (3, 5)
     conv_dilations: Tuple[int, ...] = (1, 2, 4)
     static_dim: int = 128
+    enable_directional_gating: bool = True
+    directional_gate_hidden_dim: int | None = None
+    direction_logits_threshold: float = 0.0
 
 
 class TemporalFusionTransformer(nn.Module):
@@ -228,13 +231,42 @@ class TemporalFusionTransformer(nn.Module):
         )
         self.attention_pool = AttentionPooling(cfg.hidden_dim)
 
-        self.classifier = nn.Sequential(
+        gate_hidden_dim = (
+            cfg.directional_gate_hidden_dim
+            if cfg.directional_gate_hidden_dim is not None
+            else max(64, cfg.hidden_dim // 2)
+        )
+
+        self.neutral_classifier = nn.Sequential(
             nn.LayerNorm(cfg.hidden_dim),
             nn.Dropout(cfg.dropout),
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim // 2),
+            nn.Linear(cfg.hidden_dim, gate_hidden_dim),
             nn.GELU(),
             nn.Dropout(cfg.dropout),
-            nn.Linear(cfg.hidden_dim // 2, 3),
+            nn.Linear(gate_hidden_dim, 1),
+        )
+
+        if cfg.enable_directional_gating:
+            self.direction_gate = nn.Sequential(
+                nn.LayerNorm(cfg.hidden_dim),
+                nn.Linear(cfg.hidden_dim, gate_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+                nn.Linear(gate_hidden_dim, 2),
+            )
+        else:
+            self.direction_gate = None
+
+        direction_input_dim = cfg.hidden_dim + (
+            2 if cfg.enable_directional_gating else 0
+        )
+        self.direction_classifier = nn.Sequential(
+            nn.LayerNorm(direction_input_dim),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(direction_input_dim, gate_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(gate_hidden_dim, 2),
         )
         self.reg_head = nn.Sequential(
             nn.LayerNorm(cfg.hidden_dim),
@@ -251,7 +283,7 @@ class TemporalFusionTransformer(nn.Module):
 
     def forward(
         self, x: torch.Tensor, tau_ids: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Optional[torch.Tensor]]:
         # x: (batch, time, features)
         # tau_ids: (batch,)
         h = self.input_projection(x)
@@ -270,8 +302,38 @@ class TemporalFusionTransformer(nn.Module):
         fusion = torch.cat([pooled, static_context, tau_embed], dim=-1)
         fused = self.context_fusion(fusion)
 
-        logits = self.classifier(fused)
+        neutral_logit = self.neutral_classifier(fused).squeeze(-1)
+
+        gate_logits = None
+        gate_values = None
+        if self.cfg.enable_directional_gating and self.direction_gate is not None:
+            gate_logits = self.direction_gate(fused)
+            gate_values = torch.sigmoid(gate_logits)
+            direction_input = torch.cat([fused, gate_values], dim=-1)
+        else:
+            direction_input = fused
+
+        direction_logits = self.direction_classifier(direction_input)
+
+        if self.cfg.direction_logits_threshold != 0.0:
+            direction_logits = direction_logits - self.cfg.direction_logits_threshold
+
+        if gate_values is not None:
+            eps = torch.finfo(direction_logits.dtype).eps
+            direction_logits = direction_logits + torch.log(gate_values + eps)
+
+        logits = torch.stack(
+            [direction_logits[:, 0], neutral_logit, direction_logits[:, 1]], dim=1
+        )
         ret = self.reg_head(fused).squeeze(-1)
         vol = self.vol_head(fused).squeeze(-1)
 
-        return {"logits": logits, "ret": ret, "vol": vol}
+        return {
+            "logits": logits,
+            "ret": ret,
+            "vol": vol,
+            "neutral_logit": neutral_logit,
+            "direction_logits": direction_logits,
+            "direction_gate_logits": gate_logits,
+            "direction_gate": gate_values,
+        }

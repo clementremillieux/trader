@@ -45,7 +45,10 @@ def amp_autocast(device_type: str, enabled: bool):
 def create_grad_scaler(enabled: bool):
     if enabled:
         if AMP_HAS_DEVICE_TYPE:
-            return GradScalerCls(device_type="cuda", enabled=enabled)  # type: ignore[call-arg]
+            return GradScalerCls(
+                device_type="cuda",  # type: ignore[call-arg]
+                enabled=enabled,
+            )
         else:
             return GradScalerCls(enabled=enabled)
     return None
@@ -343,7 +346,12 @@ class MultiFileSequenceDataset(IterableDataset):
         worker_info = get_worker_info()
         if worker_info is None:
             return list(self.file_paths)
-        return list(self.file_paths[worker_info.id :: worker_info.num_workers])
+        return [
+            self.file_paths[idx]
+            for idx in range(
+                worker_info.id, len(self.file_paths), worker_info.num_workers
+            )
+        ]
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
         files = self._select_files_for_worker()
@@ -471,6 +479,92 @@ def estimate_num_samples(files: Sequence[Path], stats: NormalizationStats) -> in
     return total
 
 
+def _safe_div(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return float(numerator / denominator)
+
+
+def _format_metric(value: float | None, precision: int = 3) -> str:
+    if value is None:
+        return "nan"
+    return f"{value:.{precision}f}"
+
+
+def _confusion_metrics(confusion: np.ndarray) -> Dict[str, Any]:
+    class_names = ["sell", "neutral", "buy"]
+    per_class: Dict[str, Dict[str, Any]] = {}
+    precisions: List[float] = []
+    recalls: List[float] = []
+    f1s: List[float] = []
+
+    for idx, name in enumerate(class_names):
+        tp = int(confusion[idx, idx])
+        predicted_total = int(confusion[:, idx].sum())
+        actual_total = int(confusion[idx, :].sum())
+        fp = predicted_total - tp
+        fn = actual_total - tp
+        precision = _safe_div(tp, tp + fp)
+        recall = _safe_div(tp, tp + fn)
+        f1 = (
+            None
+            if precision is None or recall is None or precision + recall == 0
+            else float(2 * precision * recall / (precision + recall))
+        )
+
+        if precision is not None:
+            precisions.append(precision)
+        if recall is not None:
+            recalls.append(recall)
+        if f1 is not None:
+            f1s.append(f1)
+
+        per_class[name] = {
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+        }
+
+    macro_precision = float(np.mean(precisions)) if precisions else None
+    macro_recall = float(np.mean(recalls)) if recalls else None
+    macro_f1 = float(np.mean(f1s)) if f1s else None
+
+    return {
+        "per_class": per_class,
+        "macro": {
+            "precision": macro_precision,
+            "recall": macro_recall,
+            "f1": macro_f1,
+        },
+    }
+
+
+def _flatten_confusion_metrics(prefix: str, confusion: np.ndarray) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    stats = _confusion_metrics(confusion)
+    for cls_name, values in stats["per_class"].items():
+        metrics[f"{prefix}_{cls_name}_tp"] = values["tp"]
+        metrics[f"{prefix}_{cls_name}_fp"] = values["fp"]
+        metrics[f"{prefix}_{cls_name}_fn"] = values["fn"]
+        metrics[f"{prefix}_{cls_name}_precision"] = values["precision"]
+        metrics[f"{prefix}_{cls_name}_recall"] = values["recall"]
+        metrics[f"{prefix}_{cls_name}_f1"] = values["f1"]
+    metrics[f"{prefix}_macro_precision"] = stats["macro"]["precision"]
+    metrics[f"{prefix}_macro_recall"] = stats["macro"]["recall"]
+    metrics[f"{prefix}_macro_f1"] = stats["macro"]["f1"]
+    return metrics
+
+
+def _build_confusion(labels: Sequence[int], preds: Sequence[int]) -> np.ndarray:
+    confusion = np.zeros((3, 3), dtype=int)
+    for target, pred in zip(labels, preds):
+        confusion[target, pred] += 1
+    return confusion
+
+
 def train(
     model: TemporalFusionTransformer,
     train_loader: DataLoader,
@@ -510,8 +604,9 @@ def train(
     label_smoothing_tensor = (
         label_smoothing.to(torch.float32) if label_smoothing is not None else None
     )
+    loss_weight = None if focal_alpha_tensor is not None else class_weights
     cls_loss_fn = FocalLoss(
-        weight=class_weights,
+        weight=loss_weight,
         gamma=focal_gamma,
         gamma_per_class=focal_gamma_tensor,
         alpha=focal_alpha_tensor,
@@ -548,6 +643,8 @@ def train(
         total_samples = 0
         all_train_labels = []
         all_train_preds = []
+        direction_gate_sum = np.zeros(2, dtype=np.float64)
+        direction_gate_count = 0
 
         total_train_batches = _safe_len(train_loader)
         progress = tqdm(
@@ -571,6 +668,12 @@ def train(
                 logits = outputs["logits"]
                 reg_pred = outputs["ret"]
                 vol_pred = outputs["vol"]
+                direction_gate_vals = outputs.get("direction_gate")
+                if direction_gate_vals is not None:
+                    direction_gate_sum += (
+                        direction_gate_vals.detach().sum(dim=0).cpu().numpy()
+                    )
+                    direction_gate_count += batch_size
 
                 if curriculum_epochs > 0 and epoch <= curriculum_epochs:
                     if binary_loss_fn is None:
@@ -595,12 +698,18 @@ def train(
                     "valeurs extrêmes / NaN."
                 )
 
-            scaler.scale(loss).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
 
             with torch.no_grad():
                 running_loss += loss.item() * batch_size
@@ -614,33 +723,18 @@ def train(
                 all_train_labels.extend(y_cls.cpu().numpy().tolist())
                 all_train_preds.extend(preds.cpu().numpy().tolist())
 
-            # Calcul matrice confusion partielle pour affichage dans la barre de progression
-            if len(all_train_labels) > 0:
-                import numpy as np
+            # Calcul matrice de confusion partielle pour la barre de progression
+            if all_train_labels:
+                train_confusion = _build_confusion(all_train_labels, all_train_preds)
+                train_stats = _confusion_metrics(train_confusion)["per_class"]
 
-                train_confusion = np.zeros((3, 3), dtype=int)
-                for t, p in zip(all_train_labels, all_train_preds):
-                    train_confusion[t, p] += 1
-                buy_tp = int(train_confusion[2, 2])
-                buy_fp_from_sell = int(train_confusion[0, 2])
-                sell_tp = int(train_confusion[0, 0])
-                sell_fp_from_buy = int(train_confusion[2, 0])
-
-                def ratio(tp, fp):
-                    denom = tp + fp
-                    return float(tp / denom) if denom > 0 else None
-
-                buy_ratio = ratio(buy_tp, buy_fp_from_sell)
-                sell_ratio = ratio(sell_tp, sell_fp_from_buy)
                 progress.set_postfix(
                     loss=running_loss / total_samples,
                     acc=running_acc / total_samples,
-                    buy_tp=buy_tp,
-                    buy_fp=buy_fp_from_sell,
-                    buy_r=f"{buy_ratio:.2f}" if buy_ratio is not None else "nan",
-                    sell_tp=sell_tp,
-                    sell_fp=sell_fp_from_buy,
-                    sell_r=f"{sell_ratio:.2f}" if sell_ratio is not None else "nan",
+                    buy_tp=train_stats["buy"]["tp"],
+                    buy_prec=_format_metric(train_stats["buy"]["precision"], 2),
+                    sell_tp=train_stats["sell"]["tp"],
+                    sell_prec=_format_metric(train_stats["sell"]["precision"], 2),
                 )
             else:
                 progress.set_postfix(
@@ -650,7 +744,10 @@ def train(
 
             if log_interval > 0 and step % log_interval == 0:
                 LOGGER.info(
-                    "Epoch %d [train] step %d%s | loss=%.4f cls=%.4f reg=%.4f vol=%.4f acc=%.4f",
+                    (
+                        "Epoch %d [train] step %d%s | loss=%.4f cls=%.4f "
+                        "reg=%.4f vol=%.4f acc=%.4f"
+                    ),
                     epoch,
                     step,
                     f"/{total_train_batches}" if total_train_batches else "",
@@ -661,58 +758,50 @@ def train(
                     running_acc / total_samples,
                 )
                 # Affichage matrice confusion train (cumulée)
-                if step > 0 and len(all_train_labels) > 0:
-                    import numpy as np
-
-                    train_confusion = np.zeros((3, 3), dtype=int)
-                    for t, p in zip(all_train_labels, all_train_preds):
-                        train_confusion[t, p] += 1
-                    buy_tp = int(train_confusion[2, 2])
-                    buy_fp_from_sell = int(train_confusion[0, 2])
-                    sell_tp = int(train_confusion[0, 0])
-                    sell_fp_from_buy = int(train_confusion[2, 0])
-
-                    def ratio(tp, fp):
-                        denom = tp + fp
-                        return float(tp / denom) if denom > 0 else None
-
-                    buy_ratio = ratio(buy_tp, buy_fp_from_sell)
-                    sell_ratio = ratio(sell_tp, sell_fp_from_buy)
+                if step > 0 and all_train_labels:
+                    train_confusion = _build_confusion(
+                        all_train_labels, all_train_preds
+                    )
+                    train_stats = _confusion_metrics(train_confusion)
                     print("\nMatrice de confusion (train, partiel):")
                     print(train_confusion)
-                    print(
-                        f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
-                    )
-                    print(
-                        f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
-                    )
+                    for cls_name in ("sell", "neutral", "buy"):
+                        cls_stats = train_stats["per_class"][cls_name]
+                        prec = cls_stats["precision"]
+                        rec = cls_stats["recall"]
+                        f1 = cls_stats["f1"]
+                        print(
+                            (
+                                f"{cls_name.capitalize()} → TP={cls_stats['tp']} "
+                                f"FP={cls_stats['fp']} FN={cls_stats['fn']} "
+                                f"precision={prec if prec is not None else 'nan'} "
+                                f"recall={rec if rec is not None else 'nan'} "
+                                f"f1={f1 if f1 is not None else 'nan'}"
+                            )
+                        )
+                    print()
 
         # Calcul matrice confusion train sur toute l'époque
-        if len(all_train_labels) > 0:
-            import numpy as np
-
-            train_confusion = np.zeros((3, 3), dtype=int)
-            for t, p in zip(all_train_labels, all_train_preds):
-                train_confusion[t, p] += 1
-            buy_tp = int(train_confusion[2, 2])
-            buy_fp_from_sell = int(train_confusion[0, 2])
-            sell_tp = int(train_confusion[0, 0])
-            sell_fp_from_buy = int(train_confusion[2, 0])
-
-            def ratio(tp, fp):
-                denom = tp + fp
-                return float(tp / denom) if denom > 0 else None
-
-            buy_ratio = ratio(buy_tp, buy_fp_from_sell)
-            sell_ratio = ratio(sell_tp, sell_fp_from_buy)
+        train_confusion = (
+            _build_confusion(all_train_labels, all_train_preds)
+            if all_train_labels
+            else np.zeros((3, 3), dtype=int)
+        )
+        if all_train_labels:
             print("\nMatrice de confusion (train, fin d'époque):")
             print(train_confusion)
-            print(
-                f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
-            )
-            print(
-                f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
-            )
+            train_stats = _confusion_metrics(train_confusion)
+            for cls_name in ("sell", "neutral", "buy"):
+                cls_stats = train_stats["per_class"][cls_name]
+                line = (
+                    f"{cls_name.capitalize()} → TP={cls_stats['tp']} "
+                    f"FP={cls_stats['fp']} FN={cls_stats['fn']} "
+                    f"precision={_format_metric(cls_stats['precision'])} "
+                    f"recall={_format_metric(cls_stats['recall'])} "
+                    f"f1={_format_metric(cls_stats['f1'])}"
+                )
+                print(line)
+            print()
 
         train_metrics: MetricsDict = {
             "train_loss": running_loss / total_samples,
@@ -721,6 +810,16 @@ def train(
             "train_vol_loss": running_vol / total_samples,
             "train_acc": running_acc / total_samples,
         }
+        if direction_gate_count > 0:
+            gate_mean = direction_gate_sum / direction_gate_count
+            train_metrics.update(
+                {
+                    "train_gate_mean_sell": float(gate_mean[0]),
+                    "train_gate_mean_buy": float(gate_mean[1]),
+                    "train_gate_count": direction_gate_count,
+                }
+            )
+        train_metrics.update(_flatten_confusion_metrics("train", train_confusion))
         LOGGER.info(
             "Epoch %d | %s", epoch, json.dumps(train_metrics, ensure_ascii=False)
         )
@@ -736,6 +835,8 @@ def train(
         val_acc = 0.0
         val_samples = 0
         val_confusion = torch.zeros((3, 3), dtype=torch.long)
+        val_direction_gate_sum = np.zeros(2, dtype=np.float64)
+        val_direction_gate_count = 0
 
         total_val_batches = _safe_len(val_loader)
         with torch.no_grad():
@@ -759,6 +860,12 @@ def train(
                 logits = outputs["logits"]
                 reg_pred = outputs["ret"]
                 vol_pred = outputs["vol"]
+                direction_gate_vals = outputs.get("direction_gate")
+                if direction_gate_vals is not None:
+                    val_direction_gate_sum += (
+                        direction_gate_vals.detach().sum(dim=0).cpu().numpy()
+                    )
+                    val_direction_gate_count += batch_size
 
                 if curriculum_epochs > 0 and epoch <= curriculum_epochs:
                     if binary_loss_fn is None:
@@ -790,7 +897,10 @@ def train(
 
                 if val_log_interval > 0 and val_step % val_log_interval == 0:
                     LOGGER.info(
-                        "Epoch %d [val] step %d%s | loss=%.4f cls=%.4f reg=%.4f vol=%.4f acc=%.4f",
+                        (
+                            "Epoch %d [val] step %d%s | loss=%.4f cls=%.4f "
+                            "reg=%.4f vol=%.4f acc=%.4f"
+                        ),
                         epoch,
                         val_step,
                         f"/{total_val_batches}" if total_val_batches else "",
@@ -802,31 +912,27 @@ def train(
                     )
                     # Affichage humain lisible de la matrice de confusion et ratios
                     confusion = val_confusion.numpy()
-                    buy_tp = int(confusion[2, 2])
-                    buy_fp_from_sell = int(confusion[0, 2])
-                    sell_tp = int(confusion[0, 0])
-                    sell_fp_from_buy = int(confusion[2, 0])
+                    val_stats = _confusion_metrics(confusion)
                     print("\nMatrice de confusion (val):")
                     print(confusion)
-                    print(
-                        f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell}"
-                    )
-                    print(
-                        f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy}\n"
-                    )
+                    for cls_name in ("sell", "neutral", "buy"):
+                        cls_stats = val_stats["per_class"][cls_name]
+                        line = (
+                            f"{cls_name.capitalize()} → TP={cls_stats['tp']} "
+                            f"FP={cls_stats['fp']} FN={cls_stats['fn']} "
+                            f"precision={_format_metric(cls_stats['precision'])} "
+                            f"recall={_format_metric(cls_stats['recall'])} "
+                            f"f1={_format_metric(cls_stats['f1'])}"
+                        )
+                        print(line)
+                    print()
 
         epoch_metrics: MetricsDict
 
         if val_samples > 0:
             confusion = val_confusion.numpy()
-            per_class = confusion.sum(axis=1)
-            recalls = np.divide(
-                np.diag(confusion),
-                per_class,
-                out=np.zeros_like(per_class, dtype=np.float64),
-                where=per_class > 0,
-            )
-            balanced_acc = float(np.mean(recalls))
+            val_stats = _confusion_metrics(confusion)
+            balanced_acc = val_stats["macro"]["recall"]
             epoch_metrics = {
                 **train_metrics,
                 "val_loss": val_loss / val_samples,
@@ -837,42 +943,34 @@ def train(
                 "val_balanced_acc": balanced_acc,
                 "val_confusion": confusion.tolist(),
             }
-
-            buy_tp = int(confusion[2, 2])
-            buy_fp_from_sell = int(confusion[0, 2])
-            sell_tp = int(confusion[0, 0])
-            sell_fp_from_buy = int(confusion[2, 0])
-
-            def ratio(tp: int, fp: int) -> float | None:
-                denom = tp + fp
-                return float(tp / denom) if denom > 0 else None
-
-            buy_ratio = ratio(buy_tp, buy_fp_from_sell)
-            sell_ratio = ratio(sell_tp, sell_fp_from_buy)
-
-            epoch_metrics.update(
-                {
-                    "val_buy_true": buy_tp,
-                    "val_buy_false_from_sell": buy_fp_from_sell,
-                    "val_buy_true_ratio": buy_ratio,
-                    "val_sell_true": sell_tp,
-                    "val_sell_false_from_buy": sell_fp_from_buy,
-                    "val_sell_true_ratio": sell_ratio,
-                }
-            )
+            if val_direction_gate_count > 0:
+                val_gate_mean = val_direction_gate_sum / val_direction_gate_count
+                epoch_metrics.update(
+                    {
+                        "val_gate_mean_sell": float(val_gate_mean[0]),
+                        "val_gate_mean_buy": float(val_gate_mean[1]),
+                        "val_gate_count": val_direction_gate_count,
+                    }
+                )
+            epoch_metrics.update(_flatten_confusion_metrics("val", confusion))
             LOGGER.info(
                 "Epoch %d | %s", epoch, json.dumps(epoch_metrics, ensure_ascii=False)
             )
 
-            # Affichage humain lisible de la matrice de confusion et ratios à la fin d'époque
+            # Affichage humain lisible de la matrice de confusion en fin d'époque
             print("\nMatrice de confusion (val, fin d'époque):")
             print(confusion)
-            print(
-                f"Achats vrais: {buy_tp} | Achats faux (depuis vente): {buy_fp_from_sell} | Ratio: {buy_ratio if buy_ratio is not None else 'nan'}"
-            )
-            print(
-                f"Ventes vraies: {sell_tp} | Ventes fausses (depuis achat): {sell_fp_from_buy} | Ratio: {sell_ratio if sell_ratio is not None else 'nan'}\n"
-            )
+            for cls_name in ("sell", "neutral", "buy"):
+                cls_stats = val_stats["per_class"][cls_name]
+                line = (
+                    f"{cls_name.capitalize()} → TP={cls_stats['tp']} "
+                    f"FP={cls_stats['fp']} FN={cls_stats['fn']} "
+                    f"precision={_format_metric(cls_stats['precision'])} "
+                    f"recall={_format_metric(cls_stats['recall'])} "
+                    f"f1={_format_metric(cls_stats['f1'])}"
+                )
+                print(line)
+            print()
         else:
             LOGGER.warning(
                 "Validation vide: aucun échantillon n'a été évalué. "
@@ -887,13 +985,10 @@ def train(
                 "val_acc": None,
                 "val_balanced_acc": None,
                 "val_confusion": val_confusion.tolist(),
-                "val_buy_true": 0,
-                "val_buy_false_from_sell": 0,
-                "val_buy_true_ratio": None,
-                "val_sell_true": 0,
-                "val_sell_false_from_buy": 0,
-                "val_sell_true_ratio": None,
             }
+            epoch_metrics.update(
+                _flatten_confusion_metrics("val", val_confusion.numpy())
+            )
             LOGGER.info(
                 "Epoch %d | %s", epoch, json.dumps(epoch_metrics, ensure_ascii=False)
             )
@@ -1035,6 +1130,25 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help="Nombre de batchs entre deux logs détaillés en validation (0 = désactivé)",
     )
+    parser.add_argument(
+        "--direction-gate-hidden-dim",
+        type=int,
+        default=None,
+        help="Taille cachée des MLP de gating directionnel (défaut: hidden_dim // 2)",
+    )
+    parser.add_argument(
+        "--direction-logit-threshold",
+        type=float,
+        default=0.0,
+        help="Seuil soustrait aux logits directionnels après gating",
+    )
+    parser.add_argument(
+        "--disable-directional-gating",
+        dest="enable_directional_gating",
+        action="store_false",
+        help="Désactive le gating hiérarchique sur les logits directionnels",
+    )
+    parser.set_defaults(enable_directional_gating=True)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -1113,6 +1227,9 @@ def main() -> None:
         conv_kernel_sizes=(3, 5, 7),
         conv_dilations=(1, 2, 4),
         static_dim=args.static_dim,
+        enable_directional_gating=args.enable_directional_gating,
+        directional_gate_hidden_dim=args.direction_gate_hidden_dim,
+        direction_logits_threshold=args.direction_logit_threshold,
     )
 
     model = TemporalFusionTransformer(cfg).to(device)

@@ -84,7 +84,7 @@ class SweepConfig:
         if self.bin_hs is None:
             self.bin_hs = [12, 24]
         if self.bin_thrs is None:
-            self.bin_thrs = [0.5, 1.0]
+            self.bin_thrs = [0.8, 1.0, 1.2, 1.5]
 
 
 def build_experiments(cfg: SweepConfig) -> List[Experiment]:
