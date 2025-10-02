@@ -431,6 +431,35 @@ def _build_dataset_command(
         cmd.extend(["--max-train-samples", str(args.full_max_train_samples)])
     if args.full_max_val_samples is not None:
         cmd.extend(["--max-val-samples", str(args.full_max_val_samples)])
+    if args.full_disable_auto_balance:
+        cmd.append("--no-auto-balance")
+    else:
+        cmd.extend(
+            [
+                "--balance-max-multiplier",
+                str(args.full_balance_max_multiplier),
+            ]
+        )
+    if args.full_disable_profit_boost:
+        cmd.extend(["--profit-boost-extra-fraction", "0"])
+    else:
+        cmd.extend(
+            [
+                "--profit-boost-quantile",
+                str(args.full_profit_boost_quantile),
+                "--profit-boost-extra-fraction",
+                str(args.full_profit_boost_extra_fraction),
+                "--profit-boost-max-multiplier",
+                str(args.full_profit_boost_max_multiplier),
+            ]
+        )
+        if args.full_profit_boost_min_gain > 0:
+            cmd.extend(
+                [
+                    "--profit-boost-min-gain",
+                    str(args.full_profit_boost_min_gain),
+                ]
+            )
     if args.extra_dataset_args:
         cmd.extend(args.extra_dataset_args)
     return cmd
@@ -508,6 +537,38 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--full-quality-report",
         type=Path,
         default=Path("datasets/quality_report_full.json"),
+    )
+    parser.add_argument("--full-disable-auto-balance", action="store_true")
+    parser.add_argument(
+        "--full-balance-max-multiplier",
+        type=float,
+        default=1.6,
+        help="Facteur max d'augmentation du dataset via équilibrage.",
+    )
+    parser.add_argument("--full-disable-profit-boost", action="store_true")
+    parser.add_argument(
+        "--full-profit-boost-quantile",
+        type=float,
+        default=0.8,
+        help="Quantile utilisés pour choisir les trades à dupliquer.",
+    )
+    parser.add_argument(
+        "--full-profit-boost-extra-fraction",
+        type=float,
+        default=0.15,
+        help="Fraction max du dataset ajoutée via duplication rentable.",
+    )
+    parser.add_argument(
+        "--full-profit-boost-max-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplicateur global max après duplication rentable.",
+    )
+    parser.add_argument(
+        "--full-profit-boost-min-gain",
+        type=float,
+        default=0.0,
+        help="Gain directionnel minimum pour la duplication rentable.",
     )
     parser.add_argument("--drive-folder-id", default=None)
     parser.add_argument("--drive-service-account", type=Path, default=None)

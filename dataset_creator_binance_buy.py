@@ -284,6 +284,14 @@ class DatasetBuildConfig:
     # Nouveau paramètre : taille max d'un shard (nombre de lignes)
     max_rows_per_shard: Optional[int] = None
 
+    # Post-traitements automatiques
+    auto_balance: bool = True
+    balance_max_multiplier: float = 1.6
+    profit_boost_quantile: float = 0.8
+    profit_boost_extra_fraction: float = 0.15
+    profit_boost_max_multiplier: float = 1.5
+    profit_boost_min_gain: float = 0.0
+
     @classmethod
     def from_cli(cls, argv: Optional[List[str]] = None) -> "DatasetBuildConfig":
         parser = argparse.ArgumentParser(
@@ -484,6 +492,53 @@ class DatasetBuildConfig:
             default=None,
             help="Nombre max de lignes par shard pickle (prioritaire sur la taille auto).",
         )
+        parser.add_argument(
+            "--no-auto-balance",
+            action="store_true",
+            help="Désactive l'équilibrage automatique des classes directionnelles.",
+        )
+        parser.add_argument(
+            "--balance-max-multiplier",
+            type=float,
+            default=1.6,
+            help=(
+                "Facteur maximal d'augmentation du nombre d'échantillons via "
+                "l'équilibrage."
+            ),
+        )
+        parser.add_argument(
+            "--profit-boost-quantile",
+            type=float,
+            default=0.8,
+            help=(
+                "Quantile utilisé pour sélectionner les trades les plus rentables "
+                "à dupliquer."
+            ),
+        )
+        parser.add_argument(
+            "--profit-boost-extra-fraction",
+            type=float,
+            default=0.15,
+            help=(
+                "Fraction maximale du dataset à ajouter via duplication de trades "
+                "rentables."
+            ),
+        )
+        parser.add_argument(
+            "--profit-boost-max-multiplier",
+            type=float,
+            default=1.5,
+            help="Multiplicateur total maximum autorisé après duplication rentable.",
+        )
+        parser.add_argument(
+            "--profit-boost-min-gain",
+            type=float,
+            default=0.0,
+            help=(
+                "Gain directionnel minimum (valeur absolue) pour être éligible "
+                "à la duplication."
+            ),
+        )
 
         args = parser.parse_args(argv)
 
@@ -524,6 +579,16 @@ class DatasetBuildConfig:
             volume_filter_hours=args.volume_filter_hours,
             direction_margin=args.direction_margin,
             max_rows_per_shard=args.max_rows_per_shard,
+            auto_balance=not args.no_auto_balance,
+            balance_max_multiplier=max(1.0, float(args.balance_max_multiplier)),
+            profit_boost_quantile=float(args.profit_boost_quantile),
+            profit_boost_extra_fraction=max(
+                0.0, float(args.profit_boost_extra_fraction)
+            ),
+            profit_boost_max_multiplier=max(
+                1.0, float(args.profit_boost_max_multiplier)
+            ),
+            profit_boost_min_gain=max(0.0, float(args.profit_boost_min_gain)),
         )
 
     def dataset_path(self, split: str, batch_index: int) -> Path:
@@ -2276,6 +2341,30 @@ async def create_dataset(
                         (fb, v_yb), dim=0
                     )
 
+    if full_train_dataset is not None:
+        post_info: Dict[str, Any] = {}
+        if config.auto_balance:
+            balance_meta = _apply_auto_balance(
+                full_train_dataset,
+                max_multiplier=max(config.balance_max_multiplier, 1.0),
+                seed=config.shuffle_seed,
+            )
+            if balance_meta:
+                post_info["auto_balance"] = balance_meta
+        if config.profit_boost_extra_fraction > 0:
+            profit_meta = _apply_profitability_boost(
+                full_train_dataset,
+                quantile=config.profit_boost_quantile,
+                extra_fraction=config.profit_boost_extra_fraction,
+                max_multiplier=max(config.profit_boost_max_multiplier, 1.0),
+                min_gain=config.profit_boost_min_gain,
+                seed=config.shuffle_seed + 97,
+            )
+            if profit_meta:
+                post_info["profit_boost"] = profit_meta
+        if post_info:
+            setattr(full_train_dataset, "_postprocess_info", post_info)
+
     return full_train_dataset, full_val_dataset
 
 
@@ -2297,6 +2386,180 @@ def _subsample_dataset(
     if isinstance(getattr(ds, "y_bin", None), torch.Tensor):
         ds.y_bin = ds.y_bin[idx]  # type: ignore[assignment]
     return ds
+
+
+def _class_hist_tensor(target: torch.Tensor) -> torch.Tensor:
+    if target.numel() == 0:
+        return torch.zeros(3, dtype=torch.long)
+    return torch.bincount(target.long() + 1, minlength=3)
+
+
+def _extend_dataset(ds: "CryptoDataset", indices: torch.Tensor) -> None:
+    if indices.numel() == 0:
+        return
+    idx = indices.to(torch.long)
+    X = ds.X
+    y_cls = ds.y_cls
+    y_reg = ds.y_reg
+    y_vol = ds.y_vol
+    tau = ds.tau
+    y_bin_attr = getattr(ds, "y_bin", None)
+
+    ds.X = torch.cat([X, X[idx]], dim=0)
+    ds.y_cls = torch.cat([y_cls, y_cls[idx]], dim=0)
+    ds.y_reg = torch.cat([y_reg, y_reg[idx]], dim=0)
+    ds.y_vol = torch.cat([y_vol, y_vol[idx]], dim=0)
+    ds.tau = torch.cat([tau, tau[idx]], dim=0)
+    if isinstance(y_bin_attr, torch.Tensor):
+        ds.y_bin = torch.cat([y_bin_attr, y_bin_attr[idx]], dim=0)  # type: ignore[assignment]
+
+
+def _apply_auto_balance(
+    ds: "CryptoDataset",
+    *,
+    max_multiplier: float,
+    seed: int,
+) -> Dict[str, Any] | None:
+    counts_before = _class_hist_tensor(ds.y_cls.cpu())
+    total_before = int(counts_before.sum().item())
+    if total_before == 0:
+        return None
+
+    directional_counts = counts_before[[0, 2]]
+    directional_target = int(directional_counts.max().item())
+    if directional_target == 0:
+        return None
+
+    target_counts = counts_before.clone()
+    for cls_idx in (0, 2):
+        if counts_before[cls_idx] > 0:
+            target_counts[cls_idx] = directional_target
+
+    potential_total = int(target_counts.sum().item())
+    max_allowed = int(total_before * max_multiplier)
+    if max_allowed <= total_before:
+        return None
+    if potential_total > max_allowed:
+        scale = (max_allowed - total_before) / max(potential_total - total_before, 1)
+        target_counts = counts_before + torch.floor(
+            (target_counts - counts_before).to(torch.float32) * scale
+        ).to(torch.long)
+
+    extra_indices: list[torch.Tensor] = []
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    for cls_idx in (0, 2):
+        current = int(counts_before[cls_idx])
+        target = int(target_counts[cls_idx])
+        if target <= current or current == 0:
+            continue
+        cls_value = cls_idx - 1
+        cls_mask = torch.nonzero(ds.y_cls == cls_value, as_tuple=False).squeeze(1)
+        if cls_mask.numel() == 0:
+            continue
+        rand_idx = torch.randint(
+            high=cls_mask.numel(),
+            size=(target - current,),
+            generator=generator,
+        )
+        extra_indices.append(cls_mask[rand_idx])
+
+    if not extra_indices:
+        return None
+
+    indices = torch.cat(extra_indices, dim=0)
+    _extend_dataset(ds, indices)
+    counts_after = _class_hist_tensor(ds.y_cls.cpu())
+    ds.class_weights = _compute_class_weights(counts_after.tolist())  # type: ignore[attr-defined]
+    info = {
+        "before": counts_before.tolist(),
+        "after": counts_after.tolist(),
+        "added": int(indices.numel()),
+        "max_multiplier": max_multiplier,
+    }
+    logger.info(
+        "Auto-balance: classes %s → %s (+%d fenêtres)",
+        counts_before.tolist(),
+        counts_after.tolist(),
+        int(indices.numel()),
+    )
+    return info
+
+
+def _apply_profitability_boost(
+    ds: "CryptoDataset",
+    *,
+    quantile: float,
+    extra_fraction: float,
+    max_multiplier: float,
+    min_gain: float,
+    seed: int,
+) -> Dict[str, Any] | None:
+    if extra_fraction <= 0:
+        return None
+
+    counts_before = _class_hist_tensor(ds.y_cls.cpu())
+    total_before = int(counts_before.sum().item())
+    if total_before == 0:
+        return None
+
+    y_cls = ds.y_cls.detach().cpu()
+    y_reg = ds.y_reg.detach().cpu()
+
+    gains = torch.zeros_like(y_reg)
+    buy_mask = y_cls == 1
+    sell_mask = y_cls == -1
+    gains[buy_mask] = torch.clamp(y_reg[buy_mask], min=0.0)
+    gains[sell_mask] = torch.clamp(-y_reg[sell_mask], min=0.0)
+    if min_gain > 0:
+        gains = torch.where(gains >= min_gain, gains, torch.zeros_like(gains))
+
+    eligible = torch.nonzero(gains > 0, as_tuple=False).squeeze(1)
+    if eligible.numel() == 0:
+        return None
+
+    qt = float(np.clip(quantile, 0.0, 0.999))
+    threshold = float(np.quantile(gains[eligible].numpy(), qt))
+    if threshold <= 0:
+        return None
+
+    top_indices = eligible[gains[eligible] >= threshold]
+    if top_indices.numel() == 0:
+        return None
+
+    max_extra = min(
+        int(total_before * extra_fraction),
+        int(total_before * max_multiplier) - total_before,
+    )
+    if max_extra <= 0:
+        return None
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    if top_indices.numel() > max_extra:
+        perm = torch.randperm(top_indices.numel(), generator=generator)
+        selected = top_indices[perm[:max_extra]]
+    else:
+        selected = top_indices
+
+    _extend_dataset(ds, selected)
+    counts_after = _class_hist_tensor(ds.y_cls.cpu())
+    ds.class_weights = _compute_class_weights(counts_after.tolist())  # type: ignore[attr-defined]
+    info = {
+        "before": counts_before.tolist(),
+        "after": counts_after.tolist(),
+        "added": int(selected.numel()),
+        "threshold": threshold,
+        "quantile": qt,
+        "extra_fraction": extra_fraction,
+    }
+    logger.info(
+        "Profit boost: duplication de %d fenêtres (seuil=%.5f, q=%.2f)",
+        int(selected.numel()),
+        threshold,
+        qt,
+    )
+    return info
 
 
 def save_new_batch(
@@ -2354,6 +2617,9 @@ def save_new_batch(
     )
     if metadata:
         meta.update(metadata)
+    extra_postprocess = getattr(batch, "_postprocess_info", None)
+    if isinstance(extra_postprocess, dict) and extra_postprocess:
+        meta.setdefault("postprocess", {}).update(extra_postprocess)
     persisted["meta"] = meta
 
     # Détermine la taille de shard pour maintenir un fichier << 4 GiB

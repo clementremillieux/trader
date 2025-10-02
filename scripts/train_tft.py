@@ -583,6 +583,8 @@ def train(
     focal_gamma_per_class: torch.Tensor | None = None,
     focal_alpha: torch.Tensor | None = None,
     label_smoothing: torch.Tensor | None = None,
+    reg_mean: float = 0.0,
+    reg_std: float = 1.0,
     curriculum_epochs: int = 0,
     early_stopping_patience: int = 0,
     log_interval: int = 0,
@@ -615,6 +617,10 @@ def train(
     reg_loss_fn = torch.nn.SmoothL1Loss()
     vol_loss_fn = torch.nn.SmoothL1Loss()
 
+    reg_mean_tensor = torch.tensor(float(reg_mean), dtype=torch.float32, device=device)
+    safe_reg_std = float(reg_std) if abs(reg_std) > 1e-6 else 1e-6
+    reg_std_tensor = torch.tensor(safe_reg_std, dtype=torch.float32, device=device)
+
     binary_loss_fn: torch.nn.Module | None = None
     if curriculum_epochs > 0:
         directional_weight = class_weights[[0, 2]].mean()
@@ -645,6 +651,10 @@ def train(
         all_train_preds = []
         direction_gate_sum = np.zeros(2, dtype=np.float64)
         direction_gate_count = 0
+        buy_gain_sum = 0.0
+        buy_gain_count = 0
+        sell_gain_sum = 0.0
+        sell_gain_count = 0
 
         total_train_batches = _safe_len(train_loader)
         progress = tqdm(
@@ -722,8 +732,25 @@ def train(
                 # Accumule pour matrice confusion train
                 all_train_labels.extend(y_cls.cpu().numpy().tolist())
                 all_train_preds.extend(preds.cpu().numpy().tolist())
+                denorm_reg = y_reg * reg_std_tensor + reg_mean_tensor
+                buy_mask = y_cls == 2
+                buy_count = int(buy_mask.sum().item())
+                if buy_count > 0:
+                    buy_gain_sum += denorm_reg[buy_mask].sum().item()
+                    buy_gain_count += buy_count
+                sell_mask = y_cls == 0
+                sell_count = int(sell_mask.sum().item())
+                if sell_count > 0:
+                    sell_gain_sum += denorm_reg[sell_mask].sum().item()
+                    sell_gain_count += sell_count
 
             # Calcul matrice de confusion partielle pour la barre de progression
+            buy_gain_pct = (
+                buy_gain_sum / buy_gain_count * 100.0 if buy_gain_count > 0 else None
+            )
+            sell_gain_pct = (
+                sell_gain_sum / sell_gain_count * 100.0 if sell_gain_count > 0 else None
+            )
             if all_train_labels:
                 train_confusion = _build_confusion(all_train_labels, all_train_preds)
                 train_stats = _confusion_metrics(train_confusion)["per_class"]
@@ -735,11 +762,15 @@ def train(
                     buy_prec=_format_metric(train_stats["buy"]["precision"], 2),
                     sell_tp=train_stats["sell"]["tp"],
                     sell_prec=_format_metric(train_stats["sell"]["precision"], 2),
+                    buy_gain=_format_metric(buy_gain_pct, 2),
+                    sell_gain=_format_metric(sell_gain_pct, 2),
                 )
             else:
                 progress.set_postfix(
                     loss=running_loss / total_samples,
                     acc=running_acc / total_samples,
+                    buy_gain=_format_metric(buy_gain_pct, 2),
+                    sell_gain=_format_metric(sell_gain_pct, 2),
                 )
 
             if log_interval > 0 and step % log_interval == 0:
@@ -779,6 +810,16 @@ def train(
                                 f"f1={f1 if f1 is not None else 'nan'}"
                             )
                         )
+                    if buy_gain_count > 0:
+                        print(
+                            "Gain moyen futur (buy) = "
+                            f"{_format_metric(buy_gain_sum / buy_gain_count * 100.0, 2)}%"
+                        )
+                    if sell_gain_count > 0:
+                        print(
+                            "Gain moyen futur (sell) = "
+                            f"{_format_metric(sell_gain_sum / sell_gain_count * 100.0, 2)}%"
+                        )
                     print()
 
         # Calcul matrice confusion train sur toute l'époque
@@ -801,6 +842,16 @@ def train(
                     f"f1={_format_metric(cls_stats['f1'])}"
                 )
                 print(line)
+            if buy_gain_count > 0:
+                print(
+                    "Gain moyen futur (buy) = "
+                    f"{_format_metric(buy_gain_sum / buy_gain_count * 100.0, 2)}%"
+                )
+            if sell_gain_count > 0:
+                print(
+                    "Gain moyen futur (sell) = "
+                    f"{_format_metric(sell_gain_sum / sell_gain_count * 100.0, 2)}%"
+                )
             print()
 
         train_metrics: MetricsDict = {
@@ -810,6 +861,14 @@ def train(
             "train_vol_loss": running_vol / total_samples,
             "train_acc": running_acc / total_samples,
         }
+        if buy_gain_count > 0:
+            train_metrics["train_buy_gain_pct_mean"] = (
+                buy_gain_sum / buy_gain_count * 100.0
+            )
+        if sell_gain_count > 0:
+            train_metrics["train_sell_gain_pct_mean"] = (
+                sell_gain_sum / sell_gain_count * 100.0
+            )
         if direction_gate_count > 0:
             gate_mean = direction_gate_sum / direction_gate_count
             train_metrics.update(
@@ -837,6 +896,10 @@ def train(
         val_confusion = torch.zeros((3, 3), dtype=torch.long)
         val_direction_gate_sum = np.zeros(2, dtype=np.float64)
         val_direction_gate_count = 0
+        val_buy_gain_sum = 0.0
+        val_buy_gain_count = 0
+        val_sell_gain_sum = 0.0
+        val_sell_gain_count = 0
 
         total_val_batches = _safe_len(val_loader)
         with torch.no_grad():
@@ -894,6 +957,17 @@ def train(
                 pairs = (y_cls.cpu() * 3 + preds.cpu()).long()
                 counts = torch.bincount(pairs, minlength=9)
                 val_confusion += counts.view(3, 3)
+                denorm_val_reg = y_reg * reg_std_tensor + reg_mean_tensor
+                val_buy_mask = y_cls == 2
+                val_buy_count = int(val_buy_mask.sum().item())
+                if val_buy_count > 0:
+                    val_buy_gain_sum += denorm_val_reg[val_buy_mask].sum().item()
+                    val_buy_gain_count += val_buy_count
+                val_sell_mask = y_cls == 0
+                val_sell_count = int(val_sell_mask.sum().item())
+                if val_sell_count > 0:
+                    val_sell_gain_sum += denorm_val_reg[val_sell_mask].sum().item()
+                    val_sell_gain_count += val_sell_count
 
                 if val_log_interval > 0 and val_step % val_log_interval == 0:
                     LOGGER.info(
@@ -943,6 +1017,14 @@ def train(
                 "val_balanced_acc": balanced_acc,
                 "val_confusion": confusion.tolist(),
             }
+            if val_buy_gain_count > 0:
+                epoch_metrics["val_buy_gain_pct_mean"] = (
+                    val_buy_gain_sum / val_buy_gain_count * 100.0
+                )
+            if val_sell_gain_count > 0:
+                epoch_metrics["val_sell_gain_pct_mean"] = (
+                    val_sell_gain_sum / val_sell_gain_count * 100.0
+                )
             if val_direction_gate_count > 0:
                 val_gate_mean = val_direction_gate_sum / val_direction_gate_count
                 epoch_metrics.update(
@@ -970,6 +1052,16 @@ def train(
                     f"f1={_format_metric(cls_stats['f1'])}"
                 )
                 print(line)
+            if val_buy_gain_count > 0:
+                print(
+                    "Gain moyen futur (val buy) = "
+                    f"{_format_metric(val_buy_gain_sum / val_buy_gain_count * 100.0, 2)}%"
+                )
+            if val_sell_gain_count > 0:
+                print(
+                    "Gain moyen futur (val sell) = "
+                    f"{_format_metric(val_sell_gain_sum / val_sell_gain_count * 100.0, 2)}%"
+                )
             print()
         else:
             LOGGER.warning(
@@ -986,6 +1078,12 @@ def train(
                 "val_balanced_acc": None,
                 "val_confusion": val_confusion.tolist(),
             }
+            epoch_metrics.update(
+                {
+                    "val_buy_gain_pct_mean": None,
+                    "val_sell_gain_pct_mean": None,
+                }
+            )
             epoch_metrics.update(
                 _flatten_confusion_metrics("val", val_confusion.numpy())
             )
@@ -1077,7 +1175,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         nargs=3,
         metavar=("GAMMA_SELL", "GAMMA_NEUTRAL", "GAMMA_BUY"),
-        default=[3.0, 2.0, 3.0],
+        default=[2.5, 3.0, 2.5],
         help="Gamma focal par classe (ordre: sell, neutral, buy)",
     )
     parser.add_argument(
@@ -1098,8 +1196,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--balance-classes",
+        dest="balance_classes",
         action="store_true",
-        help="Rééquilibre les classes en sur-échantillonnant les minoritaires",
+        default=True,
+        help=(
+            "Rééquilibre les classes en sur-échantillonnant les minoritaires "
+            "(activé par défaut)"
+        ),
+    )
+    parser.add_argument(
+        "--no-balance-classes",
+        dest="balance_classes",
+        action="store_false",
+        help="Désactive le sur-échantillonnage des classes en entraînement",
     )
     parser.add_argument(
         "--curriculum-epochs",
@@ -1139,8 +1248,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--direction-logit-threshold",
         type=float,
-        default=0.0,
-        help="Seuil soustrait aux logits directionnels après gating",
+        default=-0.2,
+        help=(
+            "Seuil soustrait aux logits directionnels après gating "
+            "(négatif = ouverture buy)"
+        ),
+    )
+    parser.add_argument(
+        "--balance-classes-val",
+        action="store_true",
+        help="Rééquilibre également le loader de validation",
     )
     parser.add_argument(
         "--disable-directional-gating",
@@ -1200,7 +1317,7 @@ def main() -> None:
         seed=args.seed,
         limit_per_file=args.limit_samples_per_file,
         num_workers=args.num_workers,
-        balance_classes=args.balance_classes,
+        balance_classes=args.balance_classes_val,
     )
 
     est_train_samples = estimate_num_samples(train_files, stats)
@@ -1285,6 +1402,8 @@ def main() -> None:
         focal_gamma_per_class=focal_gamma_per_class_tensor,
         focal_alpha=focal_alpha_tensor,
         label_smoothing=label_smoothing_tensor,
+        reg_mean=stats.reg_mean,
+        reg_std=stats.reg_std,
         curriculum_epochs=args.curriculum_epochs,
         early_stopping_patience=args.early_stopping_patience,
         log_interval=args.log_interval,
